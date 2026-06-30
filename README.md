@@ -46,6 +46,13 @@ running Fusion Electronics session, in both directions.
   `MOVE` / `ROTATE` / `VALUE` / `CHANGE PACKAGE` / `ATTRIBUTE` / `script …` all
   run headlessly.
 
+> **The write path is a workaround.** As of **2026-06-30** the Autodesk Fusion
+> Electronics API is **read-only**. Driving the EAGLE command line (`.scr` /
+> `Electron.run`) is how Steinmetz writes today — a deliberate stopgap. If and
+> when Autodesk makes the Electronics API read/write, the write layer in
+> `src/bridge.py` can be swapped to the native API with no change to the tools
+> built on top of it.
+
 On top of that base, tools get added — placement, swaps, checks, exports. The
 first proof of concept was a minimal-airwire **parts placer** that read a BGA
 board, pulled its passives toward the pads they connect to, and wrote the moves
@@ -94,6 +101,8 @@ flowchart LR
 |------|---------|
 | `src/bridge.py` | `FusionBridge` — the HTTP handshake, `electronics_read` (auto-paginating), `execute`, and `run_eagle` / `run_eagle_batch` / `run_scr` for the EAGLE write path. |
 | `src/scr.py` | Generate `.scr` scripts from EAGLE commands, with the safety rules baked in (terminate every command with `;`, reject injection). |
+| `src/board.py` | Read a live board into a structured model — elements, connected pads, nets, packages, outline. The shared "what's on the board" layer. |
+| `src/place.py` | **Tool:** constructive minimal-airwire placement. Anchors the ICs, pulls passives to the centroid of the pads they connect to, legalizes overlaps, writes `MOVE`s back. |
 | `docs/fusion-bridge.md` | The verified handshake + write-path recipe and the gotchas behind every rule. |
 | `examples/` | `read_design.py` (read + summarize), `run_command.py` (prove the write path). |
 
@@ -131,5 +140,6 @@ b.run_eagle_batch(["MOVE R7 (44.52 19.42)"], grid="MM")
 ## Status
 
 The bridge — read, execute, and the EAGLE `.scr`/command write path — is working
-and verified against a live design. Next up: porting the placement work in as
-the first real tool, then swaps / inventory checks / exports.
+and verified against a live design, and the first real tool (`src/place.py`,
+minimal-airwire placement) runs on top of it end to end. Next up: swaps,
+inventory checks, exports.
