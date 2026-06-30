@@ -20,6 +20,32 @@ from bridge import FusionBridge
 OUTLINE_LAYER = 20
 
 
+def _read_mirror_flags(bridge: FusionBridge) -> dict[int, bool]:
+    """Best-effort ``object_id -> mirrored`` for elements.
+
+    Rotation prediction assumes a top-side (un-mirrored) part — a mirrored part
+    rotates the opposite way visually. The mirror/side column name isn't stable
+    across Fusion versions and may be absent, so probe a few names and tolerate
+    failure; an empty map just means "treat everything as top-side" (the
+    pad-position check on ``--apply`` is the real guard).
+    """
+    boolish = {True, False, 0, 1, None}
+    for field in ("mirror", "mirrored", "is_mirrored"):
+        try:
+            rows = bridge.electronics_read(
+                "electronics.Element", fields=["object_id", field])
+        except Exception:
+            continue
+        if not (rows and field in rows[0]):
+            continue
+        # Only trust a genuinely boolean column. A look-alike that holds a layer
+        # number or an angle string would otherwise mark *every* part mirrored
+        # and silently disable rotation (a no-op the pad check can't catch).
+        if all(r.get(field) in boolish for r in rows):
+            return {r["object_id"]: bool(r.get(field)) for r in rows}
+    return {}
+
+
 @dataclass
 class Element:
     """A placed component (footprint) on the board."""
@@ -30,6 +56,7 @@ class Element:
     angle: float
     package_object_id: int
     value: str = ""
+    mirror: bool = False          # placed on the bottom side (flips rotation sense)
 
 
 @dataclass
@@ -75,6 +102,7 @@ def read_board(bridge: FusionBridge) -> Board:
     els = bridge.electronics_read(
         "electronics.Element",
         fields=["object_id", "name", "value", "x", "y", "angle", "package_object_id"])
+    mirror_by_id = _read_mirror_flags(bridge)
     pkgs = bridge.electronics_read(
         "electronics.Package", fields=["object_id", "name", "x1", "y1", "x2", "y2"])
     sigs = bridge.electronics_read("electronics.Signal", fields=["object_id", "name"])
@@ -90,7 +118,8 @@ def read_board(bridge: FusionBridge) -> Board:
     elements = {e["object_id"]: Element(
         object_id=e["object_id"], name=e["name"], value=e.get("value") or "",
         x=e["x"], y=e["y"], angle=e["angle"],
-        package_object_id=e["package_object_id"]) for e in els}
+        package_object_id=e["package_object_id"],
+        mirror=mirror_by_id.get(e["object_id"], False)) for e in els}
     packages = {p["object_id"]: p for p in pkgs}
     signals = {s["object_id"]: s["name"] for s in sigs}
 

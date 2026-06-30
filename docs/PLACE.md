@@ -2,10 +2,11 @@
 
 `src/place.py` is Steinmetz's first tool. It reads a live Fusion Electronics
 board, computes an **initial placement that minimizes ratsnest (airwire)
-length**, and writes the moves back over the bridge. It is *constructive* —
-it places parts from their connectivity rather than nudging an existing layout —
-and it is **translation-only** (parts keep their rotation), so pad motion is
-exact and there is no rotation-convention to reconcile.
+length**, and writes the moves back over the bridge. It is *constructive* — it
+places parts from their connectivity rather than nudging an existing layout.
+By default it is **translation-only**; with `--rotate` it adds a 90°-step
+**orientation** refinement that further shortens airwire and breaks crossings
+(see [§5](#5-rotation---rotate)).
 
 ## Before / after
 
@@ -66,26 +67,58 @@ if it fits, otherwise the placer **spirals outward to the nearest legal spot**
 `--clearance`) and inside the board outline by `--margin`. Courtyards come from
 the `Package` bounding box.
 
-### 5. Translation-only
+### 5. Rotation (`--rotate`)
 
-Parts keep their current rotation; each pad moves rigidly with its element's
-centre (`_pad_global`). This sidesteps every KiCad/EAGLE angle-sign question, and
-rotation mostly helps fine pad alignment, not gross airwire — so it is left for a
-later refinement.
+By default parts keep their current rotation; each pad moves rigidly with its
+element's centre (`_pad_global`). `--rotate` adds a third phase, run **after**
+legalization with every part's centre held fixed: each movable part tries the
+four 90° orientations and keeps the one that most lowers the objective
+**airwire length + `--cross-weight`·crossings** — a greedy coordinate descent
+(`refine_rotations`) swept to convergence. Rotation reorients a part's own pads,
+so it shortens the nets it touches and can *uncross* airwires whose crossing is
+just a pad-ordering artifact.
+
+Two deliberate choices keep it honest:
+
+- **Length stays primary.** Crossings enter only as a small mm-weighted penalty
+  (`--cross-weight`, default 2.0) that breaks near-ties — it never trades real
+  length away to shave a crossing. The before/after **crossing count** is
+  printed next to the airwire numbers so you can see the effect and tune it.
+- **Ties hold the current angle**, so `Δ = 0` is the default and a second
+  `--rotate` run on an already-placed board emits **no** rotations (idempotent).
+
+Rotation depends on how Fusion applies `ROTATE Rn` to pad coordinates —
+counter-clockwise-positive, `(dx,dy) → (-dy,dx)` for 90° (confirmed live: a
+`ROTATE R90` moved all 15 pads of an IC there). So rotation is **opt-in**,
+mirrored (bottom-side) parts are left alone (their angle field may not capture
+the flip), and `--apply` re-reads the board and checks **actual pad positions
+vs. prediction** for every touched part (see §6) — the gate that proves the
+transform matched Fusion.
+
+> **Command quirk:** the part name must be **single-quoted** for `ROTATE`
+> (`ROTATE R90 'R4'`). A bare `ROTATE R90 R4` is silently a no-op — the parser
+> doesn't bind the object — even though `MOVE R4 (x y)` takes the name bare.
 
 ### 6. Write back and verify
 
-For each moved part the placer emits `MOVE Rn (x y)`, fires them as **one
-terminated batch** over the bridge (`run_eagle_batch(..., grid="MM")`), then
-**re-reads every element and confirms it landed within 0.05 mm**. Changes are
-unsaved until you save in Fusion — reopening reverts them.
+For each touched part the placer emits a relative `ROTATE Rn <part>` (preserves
+mirror state) followed by `MOVE <part> (x y)` — both pivot on the element
+origin, so order does not matter — and fires them as **one terminated batch**
+over the bridge (`run_eagle_batch(..., grid="MM")`). It then re-reads the board
+and verifies twice: every element **landed within 0.05 mm**, and — the stronger
+gate — each touched part's **predicted pad positions match the board's actual
+pads** (`_pads_match`). A mismatch (wrong angle sign, an unhandled mirror) is
+flagged loudly rather than silently shipped. Changes are unsaved until you save
+in Fusion — reopening reverts them.
 
 ## What it does *not* do
 
-This minimizes airwire **length only**. It does not consider:
+This minimizes airwire **length** (with rotation as a secondary lever on
+crossings). It does not consider:
 
-- airwire **crossings** or routing congestion,
-- **rotation** optimization,
+- **routing congestion**, or crossings that need two parts to *swap places* —
+  rotation keeps a part's centre fixed, so it cannot fix those; full crossing
+  elimination needs repositioning (future work),
 - a BGA's **decoupling caps wanting to sit at their power balls**,
 - and none of the constraints that live *outside* the board file — thermal
   spreading, EMI zoning, connector/mechanical positions, datasheet-mandated
@@ -100,13 +133,16 @@ re-running on an already-placed board changes little.
 ```bash
 python src/place.py                 # propose only — print moves + before/after, no writes
 python src/place.py --apply         # propose, then MOVE the parts in Fusion (verified)
-python src/place.py --apply --anchors 1     # pin only the biggest part; place everything else
+python src/place.py --rotate        # also try 90° rotations (shorter airwire, fewer crossings)
+python src/place.py --apply --rotate --anchors 1   # rotate + place, pin only the biggest part
 python src/place.py --lock "J*" --ignore-nets "VCC*" "3V3"
 ```
 
 | flag | default | meaning |
 |------|---------|---------|
 | `--apply` | off | write the moves (otherwise dry-run) |
+| `--rotate` | off | also pick a 90°-step rotation per part (min airwire, fewer crossings) |
+| `--cross-weight MM` | 2.0 | airwire-crossing penalty when `--rotate` (length stays primary) |
 | `--anchors N` | 2 | pin the N largest parts in place |
 | `--lock PAT…` | – | also pin parts whose ref matches these patterns |
 | `--ignore-nets PAT…` | – | extra net-name patterns to exclude from airwire scoring |
