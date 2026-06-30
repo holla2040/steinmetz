@@ -102,7 +102,7 @@ flowchart LR
 | `src/bridge.py` | `FusionBridge` — the HTTP handshake, `electronics_read` (auto-paginating), `execute`, and `run_eagle` / `run_eagle_batch` / `run_scr` for the EAGLE write path. |
 | `src/scr.py` | Generate `.scr` scripts from EAGLE commands, with the safety rules baked in (terminate every command with `;`, reject injection). |
 | `src/board.py` | Read a live board into a structured model — elements, connected pads, nets, packages, outline. The shared "what's on the board" layer. |
-| `src/place.py` | **Tool:** constructive minimal-airwire placement. Anchors the ICs, pulls passives to the centroid of the pads they connect to, legalizes overlaps, writes `MOVE`s back. |
+| `src/place.py` | **Tool:** constructive minimal-airwire placement — anchors the ICs, pulls passives to the centroid of the pads they connect to, legalizes overlaps, writes `MOVE`s back. Methodology + before/after: [docs/PLACE.md](docs/PLACE.md). |
 | `docs/fusion-bridge.md` | The verified handshake + write-path recipe and the gotchas behind every rule. |
 | `examples/` | `read_design.py` (read + summarize), `run_command.py` (prove the write path). |
 
