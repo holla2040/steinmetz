@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Local scratch / generated scripts
+output/
+*.scr
+!examples/*.scr

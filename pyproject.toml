@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steinmetz"
+version = "0.1.0"
+description = "Automation tools for Autodesk Fusion Electronics, driven over Fusion's local HTTP bridge"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["requests"]
+
+# Flat source layout: the modules live in src/ (steinmetz is only the project name).
+[tool.setuptools]
+py-modules = ["bridge", "scr"]
+
+[tool.setuptools.package-dir]
+"" = "src"
