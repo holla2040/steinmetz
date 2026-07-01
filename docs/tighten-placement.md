@@ -2,7 +2,8 @@
 
 Iteratively tighten the placement of the **GROUP-selected** parts on the live
 Fusion board: minimize airwire (ratsnest) length with 90° rotations, keeping
-parts legal (no courtyard-clearance overlaps, inside the board edge). Runs
+parts legal (no ComponentExcludeTop/Bottom clearance overlaps, inside the board
+edge). Runs
 placement passes until one pass changes total signal-airwire length by less than
 1 mm, then stops.
 
@@ -40,11 +41,13 @@ firing**; present ⇒ a run is already in progress (continue it).
   add/remove parts. If it prints nothing, STOP and tell the user to GROUP-select
   the parts to place.
 - `python src/place.py --rotate 90` places ONLY the selected parts (freezes
-  everything else), tries 90° rotations, writes ROTATE/MOVEs over the bridge,
-  re-reads and verifies pad positions, and prints a line like:
-  `Signal-airwire: <BEFORE> mm  ->  <AFTER> mm  (<pct>%)`. Courtyard clearance
-  (`--clearance`, default 0.3 mm) and board margin (`--margin`, default 1.0 mm)
-  keep parts legal — tune only if you see overlaps/edge issues.
+  everything else) at their airwire-optimal position and rotation, writes
+  ROTATE/MOVEs over the bridge, re-reads and verifies pad positions, and prints a
+  line like: `Signal-airwire: <BEFORE> mm  ->  <AFTER> mm  (<pct>%)`. It is
+  near-optimal in a **single pass** and idempotent, so the loop typically
+  converges in 1–2 firings. Component-exclude clearance (`--clearance`, default
+  0.1 mm) and board margin (`--margin`, default 1.0 mm) keep parts legal — tune
+  only if you see overlaps/edge issues.
 - `python src/screenshot.py C:\tmp\place_<n>.png` snapshots the board (readable
   at `~/tmp/place_<n>.png`). Use the Read tool to VIEW it and sanity-check the
   layout.
