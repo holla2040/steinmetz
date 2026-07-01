@@ -1,28 +1,33 @@
-"""Constructive minimal-airwire placement for a live Fusion Electronics board.
+"""Minimal-airwire placement of the *selected* parts on a live Fusion board.
 
-Steinmetz's first tool. It reads the open board, anchors the big parts (the
-ICs), pulls every other part toward the centroid of the pads it connects to,
-and legalizes overlaps — a from-connectivity *initial* placement that minimizes
-ratsnest (airwire) length.
+Steinmetz's first tool. It optimizes only the components you've selected in
+Fusion and freezes everything else: each selected part is pulled toward the
+centroid of the pads it connects to (on the fixed parts and on each other),
+then overlaps are legalized — a from-connectivity placement that minimizes
+ratsnest (airwire) length. **Select nothing and it does nothing.**
 
-With ``--rotate`` it then runs a 90°-step **orientation** refinement: each
-movable part tries the four rotations and keeps the one that minimizes airwire
-length (and, as a tiebreak, airwire crossings), with its centre held fixed.
-Rotation is opt-in because, unlike translation, it depends on the EAGLE angle
-convention — so on ``--apply`` the tool re-reads the board and checks the
-**actual pad positions** of every moved/rotated part against its prediction,
-the gate that proves the transform matched Fusion.
+The selection is read over the bridge (see ``src/selection.py``): GROUP-select
+the parts in the Board editor (the rubber-band Group tool) and they're captured
+automatically — no manual script run in Fusion. ``--only`` bypasses that with an
+explicit ref list.
 
-Dry-run by default: it prints the proposed moves/rotations and the before/after
-airwire and crossing count. Pass ``--apply`` to write the ``ROTATE``/``MOVE``s
-back over the bridge (each terminated with ``;``), then it re-reads to verify.
-Changes are unsaved until you save in Fusion.
+It also runs an **orientation** refinement: each selected part tries rotations
+in ``--rotate`` steps (default 90° => 0/90/180/270; ``--rotate 1`` = free 1°
+rotation) and keeps the one that minimizes airwire length, with airwire
+crossings as a tiebreak and its centre held fixed. Because rotation depends on
+the EAGLE angle convention, after writing the tool re-reads the board and checks
+the **actual pad positions** of every moved/rotated part against its prediction
+— the gate that proves the transform matched Fusion.
 
-    python src/place.py                 # propose only (no writes)
-    python src/place.py --apply         # propose, then move parts in Fusion
-    python src/place.py --rotate        # also try 90° rotations per part
-    python src/place.py --anchors 1     # free U2-style ICs too; pin only the biggest
-    python src/place.py --lock "J*" --ignore-nets GND "VCC*"
+It prints the moves/rotations and the before/after airwire and crossing count,
+writes the ``ROTATE``/``MOVE``s back over the bridge (each terminated with
+``;``), then re-reads to verify the parts landed. Changes are unsaved until you
+save in Fusion.
+
+    python src/place.py                 # place the current selection (90° steps)
+    python src/place.py --rotate 1      # let parts rotate freely, in 1° steps
+    python src/place.py --only R4 R5 R8 # override the selection with these refs
+    python src/place.py --ignore-nets GND "VCC*"
 
 Run with a board open in Fusion.
 """
@@ -35,6 +40,7 @@ import re
 
 from board import Board, read_board
 from bridge import FusionBridge
+from selection import read_selection
 
 # Nets excluded from the airwire objective by default (plane-routed power).
 _POWER = re.compile(r"^(GND|AGND|DGND|VSS|VDD|VCC|VEE|VBAT|VREF|VTT|[+]?\d+V\d*|"
@@ -125,9 +131,9 @@ def segments_cross(s1, s2) -> bool:
 
 
 class Placer:
-    def __init__(self, board: Board, anchors: int, lock: list[str],
-                 ignore_nets: list[str], clearance: float, margin: float,
-                 cross_weight: float = 2.0):
+    def __init__(self, board: Board, ignore_nets: list[str], clearance: float,
+                 margin: float, cross_weight: float = 2.0,
+                 only: list[str] | None = None):
         self.b = board
         self.clearance = clearance
         self.margin = margin
@@ -138,15 +144,13 @@ class Placer:
         # original centers; pads move rigidly relative to these
         self.orig = {eid: (e.x, e.y) for eid, e in board.elements.items()}
 
-        # anchors = the N largest packages by area, plus any --lock matches
-        def area(eid):
-            x1, y1, x2, y2 = board.pkg_bbox(eid)
-            return (x2 - x1) * (y2 - y1)
-        by_area = sorted(board.elements, key=area, reverse=True)
-        self.anchors = set(by_area[:anchors])
-        for eid, e in board.elements.items():
-            if any(fnmatch.fnmatch(e.name, p) for p in lock):
-                self.anchors.add(eid)
+        # place ONLY the selected parts (globs ok); freeze everything else. The
+        # frozen set is "all but these", so the selected parts flow against a
+        # fixed board.
+        self.only = list(only or [])
+        picked = {eid for eid, e in board.elements.items()
+                  if any(fnmatch.fnmatch(e.name, p) for p in self.only)}
+        self.anchors = set(board.elements) - picked
         self.movable = [e for e in board.elements if e not in self.anchors]
         # Mirrored (bottom-side) parts rotate the opposite way; the angle field
         # may not capture mirror state, so leave their orientation alone.
@@ -155,23 +159,28 @@ class Placer:
     # ----- airwire scoring -------------------------------------------------
 
     @staticmethod
-    def _rot(dx: float, dy: float, a: int) -> tuple[float, float]:
-        """Apply what Fusion's ``ROTATE R<a>`` does to a pad offset (a in
-        {0,90,180,270}). Exact integer remap — no sin/cos round-off.
+    def _rot(dx: float, dy: float, a: float) -> tuple[float, float]:
+        """Apply what Fusion's ``ROTATE R<a>`` does to a pad offset.
 
         Counter-clockwise-positive, matching EAGLE/Fusion's ``ROTATE Rn`` —
         confirmed against a live board: ``ROTATE R90 'U2'`` moved all 15 pads of
-        an IC to ``(-dy, dx)`` (the pad-position gate on ``--apply`` re-checks
-        this for every rotated part).
+        an IC to ``(-dy, dx)`` (the pad-position gate re-checks this for every
+        rotated part). The four right angles use an exact integer remap (no
+        sin/cos round-off); any other step (e.g. 45°) falls back to trig, with
+        the 0.1 mm pad-position tolerance absorbing the round-off.
         """
         a %= 360
+        if a == 0:
+            return (dx, dy)
         if a == 90:
             return (-dy, dx)
         if a == 180:
             return (-dx, -dy)
         if a == 270:
             return (dy, -dx)
-        return (dx, dy)
+        rad = math.radians(a)
+        c, s = math.cos(rad), math.sin(rad)
+        return (dx * c - dy * s, dx * s + dy * c)
 
     def _pad_global(self, pad, centers, rotations=None):
         """Global position of ``pad`` given each element's centre and rotation.
@@ -311,25 +320,40 @@ class Placer:
         others = {e: c for e, c in centers.items() if e != eid}
         return self._fits(eid, centers[eid], others, trial)
 
-    def refine_rotations(self, centers, passes: int = 8) -> dict[int, int]:
-        """Pick a 90°-step rotation per movable part, centres held fixed.
+    @staticmethod
+    def _angle_steps(step: float) -> list[float]:
+        """Candidate rotations 0..360 in increments of ``step`` degrees.
+
+        ``90`` -> ``[0, 90, 180, 270]``; ``45`` -> eight orientations; etc. A
+        step that doesn't divide 360 is rounded to the nearest whole count.
+        """
+        if step <= 0:
+            raise ValueError("rotation step must be positive")
+        n = max(1, round(360.0 / step))
+        return [round(i * (360.0 / n), 6) for i in range(n)]
+
+    def refine_rotations(self, centers, step: float = 90.0,
+                         passes: int = 8) -> dict[int, float]:
+        """Pick a rotation per movable part (centres held fixed), in ``step``°.
 
         Greedy coordinate descent: sweep parts in a fixed order, each adopting
         the rotation that most lowers ``_cost`` (airwire length, with crossings
         as a tiebreak), keeping only strict improvements so a tie holds the
         current angle — which makes ``delta = 0`` the default and keeps a re-run
-        on an already-placed board emitting no rotations. Mirrored parts and any
-        rotation that would collide or leave the board are skipped. Returns
-        ``eid -> delta_deg``.
+        on an already-placed board emitting no rotations. Candidate angles are
+        ``step``-degree increments (default 90 => 0/90/180/270). Mirrored parts
+        and any rotation that would collide or leave the board are skipped.
+        Returns ``eid -> delta_deg``.
         """
-        rotations = {e: 0 for e in self.movable}
+        candidates = self._angle_steps(step)
+        rotations = {e: 0.0 for e in self.movable}
         rotatable = [e for e in self.movable if e not in self.mirrored]
         for _ in range(passes):
             changed = False
             for eid in rotatable:
                 cur = rotations[eid]
                 best_a, best_cost = cur, self._cost(centers, rotations)
-                for a in (0, 90, 180, 270):
+                for a in candidates:
                     if a == cur or not self._rotation_fits(eid, centers, rotations, a):
                         continue
                     trial = dict(rotations)
@@ -348,17 +372,16 @@ class Placer:
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--apply", action="store_true",
-                    help="write the moves back to Fusion (default: propose only)")
-    ap.add_argument("--rotate", action="store_true",
-                    help="also try 90° rotations per part (min airwire, fewer crossings)")
+    ap.add_argument("--rotate", type=float, default=90.0, metavar="DEG",
+                    help="rotation granularity in degrees (default: 90). Rotation "
+                         "is always on; --rotate 1 lets parts rotate freely in 1° "
+                         "steps, --rotate 45 in 45° steps, etc.")
     ap.add_argument("--cross-weight", type=float, default=2.0, metavar="MM",
-                    help="airwire-crossing penalty in mm when --rotate (default: 2.0; "
-                         "length stays primary, this only breaks near-ties)")
-    ap.add_argument("--anchors", type=int, default=2,
-                    help="pin the N largest parts in place (default: 2)")
-    ap.add_argument("--lock", nargs="+", default=[], metavar="PAT",
-                    help="also pin parts whose ref matches these patterns (e.g. 'J*')")
+                    help="airwire-crossing penalty in mm (default: 2.0; length "
+                         "stays primary, this only breaks near-ties)")
+    ap.add_argument("--only", nargs="+", default=[], metavar="REF",
+                    help="override the Fusion selection with this explicit ref "
+                         "list (globs ok); handy for scripted/repeat runs")
     ap.add_argument("--ignore-nets", nargs="+", default=[], metavar="PAT",
                     help="extra net-name patterns to exclude from airwire scoring")
     ap.add_argument("--clearance", type=float, default=0.3,
@@ -366,23 +389,41 @@ def main():
     ap.add_argument("--margin", type=float, default=1.0,
                     help="keep parts this far inside the board edge in mm (default: 1.0)")
     args = ap.parse_args()
+    if args.rotate <= 0:
+        ap.error("--rotate step must be a positive number of degrees")
 
     bridge = FusionBridge().connect()
+    # The selection IS the input. --only is just a manual override of it; with
+    # neither, there's nothing to place.
+    if args.only:
+        only = list(args.only)
+        print(f"Placing ({len(only)}): {', '.join(only)}")
+    else:
+        only = read_selection(bridge)
+        if not only:
+            print("Nothing selected — no placement. In Fusion's Board editor, "
+                  "GROUP-select the parts to place (rubber-band Group tool), "
+                  "then re-run.")
+            return
+        print(f"Selected ({len(only)}): {', '.join(only)}")
     board = read_board(bridge)
-    placer = Placer(board, args.anchors, args.lock, args.ignore_nets,
-                    args.clearance, args.margin, args.cross_weight)
+    placer = Placer(board, args.ignore_nets, args.clearance, args.margin,
+                    args.cross_weight, only=only)
 
-    anchor_names = sorted(board.elements[e].name for e in placer.anchors)
+    if not placer.movable:
+        print(f"None of those refs matched a part on the board: {', '.join(only)}")
+        return
+
     print(f"Board {board.outline[2]-board.outline[0]:.0f} x "
           f"{board.outline[3]-board.outline[1]:.0f} mm · {len(board.elements)} parts · "
           f"{len(board.net_pads())} nets ({len(placer.ignore)} power/plane ignored)")
-    print(f"Anchored: {', '.join(anchor_names)}")
+    placing = sorted(board.elements[e].name for e in placer.movable)
+    print(f"Placing: {', '.join(placing)} ({len(placer.anchors)} parts frozen)")
 
     before_len = placer.airwire(placer.orig)
     before_cross = placer.crossings(placer.orig)
     final = placer.solve()
-    rotations = (placer.refine_rotations(final) if args.rotate
-                 else {e: 0 for e in placer.movable})
+    rotations = placer.refine_rotations(final, step=args.rotate)
     after_len = placer.airwire(final, rotations)
     after_cross = placer.crossings(final, rotations)
     pct = (100 * (before_len - after_len) / before_len) if before_len else 0.0
@@ -402,15 +443,11 @@ def main():
                             d, rot, eid))
     actions.sort(key=lambda m: m[0])
     for name, nx, ny, d, rot, _ in actions:
-        tag = f"  R{rot}" if rot else ""
+        tag = f"  R{rot:g}" if rot else ""
         print(f"  {name:<5} -> ({nx:>8.2f}, {ny:>8.2f})   |d|={d:6.1f}{tag}")
     n_move = sum(1 for a in actions if a[3] > 0.01)
     n_rot = sum(1 for a in actions if a[4])
-    print(f"\n{n_move} part(s) would move, {n_rot} would rotate.")
-
-    if not args.apply:
-        print("Dry run — nothing written. Re-run with --apply to move parts in Fusion.")
-        return
+    print(f"\n{n_move} part(s) move, {n_rot} rotate.")
 
     # ROTATE (relative, preserves mirror) then MOVE — both pivot on the element
     # origin, so order is immaterial to the final pad positions. The part name
@@ -419,7 +456,7 @@ def main():
     cmds = []
     for name, nx, ny, d, rot, _ in actions:
         if rot:
-            cmds.append(f"ROTATE R{rot} '{name}'")
+            cmds.append(f"ROTATE R{rot:g} '{name}'")
         if d > 0.01:
             cmds.append(f"MOVE {name} ({nx} {ny})")
     print(f"\nApplying {len(cmds)} command(s) over the bridge...")

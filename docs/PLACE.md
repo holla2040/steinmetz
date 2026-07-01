@@ -8,6 +8,15 @@ By default it is **translation-only**; with `--rotate` it adds a 90°-step
 **orientation** refinement that further shortens airwire and breaks crossings
 (see [§5](#5-rotation---rotate)).
 
+## Iterative tightening loop
+
+To tighten a GROUP-selected sub-circuit until it converges, run the ready-made
+`/loop` prompt in [`tighten-placement.md`](tighten-placement.md): start a fresh
+agent and enter **`/loop follow docs/tighten-placement.md`**. The invocation is
+the same every firing — the prompt is self-contained and tracks progress in
+`~/tmp/place_loop_state.json`, running placement passes until one improves airwire
+by < 1 mm.
+
 ## Before / after
 
 A 16-part ECP5 BGA board with the passives scattered off-board, placed in one

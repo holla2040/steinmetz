@@ -102,7 +102,9 @@ flowchart LR
 | `src/bridge.py` | `FusionBridge` — the HTTP handshake, `electronics_read` (auto-paginating), `execute`, and `run_eagle` / `run_eagle_batch` / `run_scr` for the EAGLE write path. |
 | `src/scr.py` | Generate `.scr` scripts from EAGLE commands, with the safety rules baked in (terminate every command with `;`, reject injection). |
 | `src/board.py` | Read a live board into a structured model — elements, connected pads, nets, packages, outline. The shared "what's on the board" layer. |
-| `src/place.py` | **Tool:** constructive minimal-airwire placement — anchors the ICs, pulls passives to the centroid of the pads they connect to, legalizes overlaps, writes `MOVE`s back. Methodology + before/after: [docs/PLACE.md](docs/PLACE.md). |
+| `src/selection.py` | Read the user's live selection over the bridge — GROUP-select parts in Fusion and a ULP (`ingroup()`) captures their refs. The "what's selected" layer. |
+| `src/place.py` | **Tool:** minimal-airwire placement of the **selected** parts (everything else frozen) — pulls each toward the centroid of the pads it connects to, refines orientation, legalizes overlaps, writes `ROTATE`/`MOVE`s back, verifies. Methodology + before/after: [docs/PLACE.md](docs/PLACE.md). |
+| `src/screenshot.py` | Snapshot the board to a PNG (`WINDOW FIT` + EAGLE `EXPORT IMAGE`) for visual verification. |
 | `docs/fusion-bridge.md` | The verified handshake + write-path recipe and the gotchas behind every rule. |
 | `examples/` | `read_design.py` (read + summarize), `run_command.py` (prove the write path). |
 

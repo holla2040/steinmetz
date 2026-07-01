@@ -17,8 +17,9 @@ pip install -e .                  # installs the only dependency: requests
 
 python examples/read_design.py    # connect + summarize the open design
 python examples/run_command.py    # prove the write path (harmless WINDOW FIT)
-python src/place.py               # the first tool — dry-run placement (no writes)
-python src/place.py --apply       # write MOVEs back to Fusion, then re-read to verify
+python src/selection.py           # show the current GROUP-selected parts
+python src/place.py               # place the selected parts (writes MOVEs, then verifies)
+python src/screenshot.py          # snapshot the board to ~/tmp for a look
 ```
 
 - **There is no automated test suite, linter, or CI.** "Verify" everywhere means
@@ -46,17 +47,40 @@ Three layers, each built on the one below, plus a `.scr` helper:
   tools consume. The one join that matters: `ContactRef` ties an element + a net
   (`Signal`) to a pad, and the pad's placed global position lives on the
   `Smd`/`Pad` row keyed by `contact_object_id`.
-- **`src/place.py` (`Placer`) — a tool.** Minimal-airwire constructive placement.
-  Reads the board, anchors the biggest ICs, pulls passives to the centroid of the
-  pads they connect to, legalizes overlaps, writes `MOVE`s back. Methodology and
-  before/after in `docs/PLACE.md`. The template every future tool follows:
+- **`src/place.py` (`Placer`) — a tool.** Minimal-airwire placement of the
+  **selected** parts (the rest frozen): pulls each toward the centroid of the
+  pads it connects to, refines orientation in `--rotate`-degree steps (default
+  90, always on), legalizes overlaps, writes `ROTATE`/`MOVE`s back, then
+  re-reads to verify pad positions. Selection comes from `selection.py`;
+  `--only REF...` overrides it. Nothing selected → nothing placed. Methodology
+  and before/after in `docs/PLACE.md`. The template every future tool follows:
   read → compute → write back → re-read to verify.
 - **`src/scr.py` — `.scr` generation/validation.** Renders EAGLE command-line
   scripts with the safety rules baked in (terminate with `;`, reject control
   chars and double-quotes).
+- **`src/selection.py` (`read_selection`) — selection utility.** The shared
+  "what's selected" layer, fully bridge-driven. `execute()` runs *in-process*
+  (same pid/MainThread), but `ui.activeSelections` still reads `0` — it's the
+  Fusion *design* selection collection, never wired to the Electronics editor
+  (`Element` has no selected flag; `selectionSets` throws). The Electronics
+  selection lives in the embedded EAGLE engine, which the bridge *can* drive: so
+  `read_selection` (one `execute`) writes a tiny ULP to
+  `C:\tmp`, runs it via `Electron.run "RUN '…'"`, and the ULP's `ingroup(E)`
+  walks the board writing every grouped ref to
+  `C:\tmp\steinmetz_selection.txt`, which the same call reads back. **Gesture:
+  parts must be GROUP-selected (rubber-band Group tool), not click-selected.**
+  `place.py` uses this as its default input; `--only` overrides with an explicit
+  ref list. `scripts/capture_selection.py` is an obsolete manual fallback (the
+  only way to capture a plain click-selection, run *inside* Fusion).
+- **`src/screenshot.py` (`capture`) — visual verification.** Snapshots the board
+  to a PNG for a look (the place → screenshot verify loop). `app.activeViewport`
+  is `None` in the PCB Editor, so `saveAsImageFile` can't be used — it fires
+  `WINDOW FIT` then the EAGLE `EXPORT IMAGE '<path>' <dpi>` command. Writes to
+  `C:\tmp` (== WSL `~/tmp` on this host) so the PNG reads straight back.
 
 Future tools (swaps, inventory checks, exports) should be new modules under
-`src/` that take a `FusionBridge` / `Board` and follow the same loop.
+`src/` that take a `FusionBridge` / `Board` and follow the same loop. Anything
+selection-aware reuses `selection.read_selection`.
 
 ### The write path is a deliberate workaround
 
