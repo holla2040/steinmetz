@@ -105,7 +105,11 @@ class Board:
         return [p for p in self.pads if p.element_id == element_id]
 
     def pkg_bbox(self, element_id: int) -> tuple[float, float, float, float]:
-        """Local package bounding box (courtyard proxy), in board units."""
+        """Local raw package bounding box, in board units.
+
+        This often includes text/value/artwork extents. Placement legality should
+        use :meth:`placement_bbox`, not this package-level diagnostic extent.
+        """
         pk = self.packages.get(self.elements[element_id].package_object_id, {})
         return (pk.get("x1", -0.5), pk.get("y1", -0.5),
                 pk.get("x2", 0.5), pk.get("y2", 0.5))

@@ -43,15 +43,19 @@ Three layers, each built on the one below, plus a `.scr` helper:
   else goes through this.
 - **`src/board.py` (`read_board` → `Board`) — model.** Pulls the raw
   `electronics.*` entities and joins them into elements, connected pads, nets,
-  packages, and the board outline. The shared "what's on the board" layer that
-  tools consume. The one join that matters: `ContactRef` ties an element + a net
-  (`Signal`) to a pad, and the pad's placed global position lives on the
-  `Smd`/`Pad` row keyed by `contact_object_id`.
+  packages, component-exclude placement geometry, and the board outline. The
+  shared "what's on the board" layer that tools consume. The one join that
+  matters: `ContactRef` ties an element + a net (`Signal`) to a pad, and the
+  pad's placed global position lives on the `Smd`/`Pad` row keyed by
+  `contact_object_id`. Placement legality should use package-local
+  `ComponentExcludeTop` / `ComponentExcludeBottom` geometry, with contact/SMD
+  geometry only as fallback.
 - **`src/place.py` (`Placer`) — a tool.** Minimal-airwire placement of the
-  **selected** parts (the rest frozen): pulls each toward the centroid of the
-  pads it connects to, refines orientation in `--rotate`-degree steps (default
-  90, always on), legalizes overlaps, writes `ROTATE`/`MOVE`s back, then
-  re-reads to verify pad positions. Selection comes from `selection.py`;
+  **selected** parts (the rest frozen): chooses each part's position and
+  rotation jointly from its incident nets, legalizes overlaps against
+  component-exclude regions (`--clearance` default 0.1 mm), writes
+  `ROTATE`/`MOVE`s back, then re-reads to verify pad positions. Selection comes
+  from `selection.py`;
   `--only REF...` overrides it. Nothing selected → nothing placed. Methodology
   and before/after in `docs/PLACE.md`. The template every future tool follows:
   read → compute → write back → re-read to verify.

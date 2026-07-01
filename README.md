@@ -54,10 +54,11 @@ running Fusion Electronics session, in both directions.
 > built on top of it.
 
 On top of that base, tools get added — placement, swaps, checks, exports. The
-first proof of concept was a minimal-airwire **parts placer** that reads a live
-board, pulls the selected parts toward the pads they connect to, and writes the
-moves back over this bridge — collapsing a fan of long airwires into short ones,
-end to end.
+first proof of concept is a minimal-airwire **parts placer** that reads a live
+board, places the selected parts at short-airwire positions against the frozen
+parts, respects package `ComponentExcludeTop`/`ComponentExcludeBottom` placement
+regions, and writes the moves back over this bridge — collapsing a fan of long
+airwires into short ones, end to end.
 
 ## The path
 
@@ -102,10 +103,11 @@ flowchart LR
 |------|---------|
 | `src/bridge.py` | `FusionBridge` — the HTTP handshake, `electronics_read` (auto-paginating), `execute`, and `run_eagle` / `run_eagle_batch` / `run_scr` for the EAGLE write path. |
 | `src/scr.py` | Generate `.scr` scripts from EAGLE commands, with the safety rules baked in (terminate every command with `;`, reject injection). |
-| `src/board.py` | Read a live board into a structured model — elements, connected pads, nets, packages, outline. The shared "what's on the board" layer. |
+| `src/board.py` | Read a live board into a structured model — elements, connected pads, nets, packages, component-exclude geometry, outline. The shared "what's on the board" layer. |
 | `src/selection.py` | Read the user's live selection over the bridge — GROUP-select parts in Fusion and a ULP (`ingroup()`) captures their refs. The "what's selected" layer. |
-| `src/place.py` | **Tool:** minimal-airwire placement of the **selected** parts (everything else frozen) — pulls each toward the centroid of the pads it connects to, refines orientation, legalizes overlaps, writes `ROTATE`/`MOVE`s back, verifies. Methodology + before/after: [docs/PLACE.md](docs/PLACE.md). |
+| `src/place.py` | **Tool:** minimal-airwire placement of the **selected** parts (everything else frozen) — chooses position and rotation jointly, legalizes against component-exclude regions, writes `ROTATE`/`MOVE`s back, verifies. Methodology + before/after: [docs/PLACE.md](docs/PLACE.md). |
 | `src/screenshot.py` | Snapshot the board to a PNG (`WINDOW FIT` + EAGLE `EXPORT IMAGE`) for visual verification. |
+| `scripts/evaluate_place.py` | Read-only placement evaluator for live-board experiments; computes the candidate and overlap report without writing `MOVE`/`ROTATE` commands. |
 | `docs/fusion-bridge.md` | The verified handshake + write-path recipe and the gotchas behind every rule. |
 | `examples/` | `read_design.py` (read + summarize), `run_command.py` (prove the write path). |
 

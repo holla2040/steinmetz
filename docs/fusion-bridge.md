@@ -57,12 +57,17 @@ schematic `Part`/`Attribute`. The pieces that matter for placement/geometry:
 | `electronics.Smd` / `Pad` | `x`, `y` in **global board coords**, `angle`, `layer`, `contact_object_id`, `signal` |
 | `electronics.Signal` | `name` (board net) |
 | `electronics.ContactRef` | `element_object_id` + `contact_object_id` + `signal_object_id` — the connectivity graph |
-| `electronics.Package` | bbox `x1,y1,x2,y2` (courtyard proxy) |
-| `electronics.Wire` | `x1,y1,x2,y2,layer`; **layer 20** carries the board outline |
+| `electronics.Package` | bbox `x1,y1,x2,y2`; useful for diagnostics, but often includes text/artwork and is not a placement keepout |
+| `electronics.Layer` | layer names/numbers; `ComponentExcludeTop`/`ComponentExcludeBottom` are the placement keepout layers |
+| `electronics.Contact` | package-local pad/contact coordinates |
+| `electronics.Wire` / `Rectangle` / `Circle` | package or board geometry; **layer 20** carries the board outline, component-exclude layers carry placement keepouts |
 
 Join `ContactRef.contact_object_id == Smd.contact_object_id` to get, per
-connected pad: element + signal + global position. Full schema for any class:
-`resources/read resource://mcp.electronics_schema_<class>` (or
+connected pad: element + signal + global position. For placement legality, read
+the `Layer` table to resolve `ComponentExcludeTop` / `ComponentExcludeBottom`,
+then read package-local geometry (`Wire`, `Rectangle`, `Circle`) on those layers;
+that is the footprint author's intended component placement keepout. Full schema
+for any class: `resources/read resource://mcp.electronics_schema_<class>` (or
 `FusionBridge.read_schema("element")`).
 
 ⚠️ **Reads cap at 100 rows by default** (`pagination.hasMore`); max `limit` is

@@ -168,6 +168,7 @@ python src/place.py --rotate 1      # let parts rotate freely, in 1° steps
 python src/place.py --only R4 R5 R8 # override the selection with an explicit ref list
 python src/place.py --refine-only   # quench the current layout in place, no re-seed
 python src/place.py --ignore-nets "VCC*" "3V3"
+python scripts/evaluate_place.py    # read-only: compute/report candidate, write nothing
 ```
 
 | flag | default | meaning |
@@ -192,3 +193,6 @@ python src/place.py --ignore-nets "VCC*" "3V3"
 GROUP-select the parts to place first (see `src/selection.py`), and run with a
 board open in Fusion and the bridge reachable (see
 [fusion-bridge.md](fusion-bridge.md)).
+
+Use `scripts/evaluate_place.py` for live-board experiments when you want the
+same metrics and overlap checks without applying any `ROTATE`/`MOVE` commands.
