@@ -22,9 +22,16 @@ python src/place.py               # place the selected parts (writes MOVEs, then
 python src/screenshot.py          # snapshot the board to C:\tmp; read at /mnt/c/tmp
 ```
 
+The top-level `Makefile` wraps these as thin aliases (`make setup`, `make read`,
+`make place`, `make screenshot`, `make selection`; `make help` lists them). It
+defaults to the `.venv` interpreter so targets run without activating first. The
+tools are flag-driven, so to pass options call the script directly
+(`.venv/bin/python src/place.py --only U1`) rather than through `make`.
+
 - **There is no automated test suite, linter, or CI.** "Verify" everywhere means
   re-reading the live design and checking parts landed (see `place.py`'s verify
-  step). Don't look for `pytest`/`make test` — they don't exist.
+  step). The `Makefile` only aliases the run commands — there's no `make test`
+  or `pytest`; don't look for them.
 - **Nothing runs without a live Fusion session.** Every example and tool requires
   a Windows-side Fusion with an Electronics document open, the "Fusion MCP Server"
   preference enabled, and a `netsh` port-forward to the WSL gateway IP. Full
