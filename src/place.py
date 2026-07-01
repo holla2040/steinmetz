@@ -163,9 +163,9 @@ class Placer:
         """Apply what Fusion's ``ROTATE R<a>`` does to a pad offset.
 
         Counter-clockwise-positive, matching EAGLE/Fusion's ``ROTATE Rn`` —
-        confirmed against a live board: ``ROTATE R90 'U2'`` moved all 15 pads of
-        an IC to ``(-dy, dx)`` (the pad-position gate re-checks this for every
-        rotated part). The four right angles use an exact integer remap (no
+        confirmed against a live board: a ``ROTATE R90`` moved every pad of a
+        rotated part to ``(-dy, dx)`` (the pad-position gate re-checks this for
+        every rotated part). The four right angles use an exact integer remap (no
         sin/cos round-off); any other step (e.g. 45°) falls back to trig, with
         the 0.1 mm pad-position tolerance absorbing the round-off.
         """
