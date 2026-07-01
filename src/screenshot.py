@@ -12,8 +12,8 @@ Note: in the PCB Editor workspace ``app.activeViewport`` is ``None`` (that's the
 3D-design path), so ``saveAsImageFile`` can't be used — the board-native
 ``EXPORT IMAGE`` command is the route.
 
-Path mapping: this host's WSL ``~/tmp`` is a symlink to ``C:\\tmp`` (Win11), so
-Fusion writes ``C:\\tmp\\x.png`` and we read it at ``~/tmp/x.png``.
+Path mapping: Fusion writes ``C:\\tmp\\x.png`` and WSL reads it at
+``/mnt/c/tmp/x.png``. On this host, ``~/tmp`` is a symlink to ``/mnt/c/tmp``.
 
     python src/screenshot.py                 # capture -> print the WSL path
     python src/screenshot.py C:\\tmp\\b.png   # ...to a chosen Fusion-side path
@@ -25,7 +25,7 @@ import sys
 
 from bridge import FusionBridge
 
-# Default Fusion-side (Windows) path; C:\tmp == WSL ~/tmp on this host.
+# Default Fusion-side (Windows) path; WSL reads it at /mnt/c/tmp.
 DEFAULT_WIN_PATH = r"C:\tmp\steinmetz_view.png"
 
 

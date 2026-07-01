@@ -167,6 +167,8 @@ python src/place.py                 # place the current selection (90° rotation
 python src/place.py --rotate 1      # let parts rotate freely, in 1° steps
 python src/place.py --only R4 R5 R8 # override the selection with an explicit ref list
 python src/place.py --refine-only   # quench the current layout in place, no re-seed
+python src/place.py --grid          # snap part origins to Fusion's current main grid
+python src/place.py --nogrid        # disable part-origin grid snapping
 python src/place.py --ignore-nets "VCC*" "3V3"
 python scripts/evaluate_place.py    # read-only: compute/report candidate, write nothing
 ```
@@ -185,6 +187,9 @@ python scripts/evaluate_place.py    # read-only: compute/report candidate, write
 | `--nudge MM` | 1.5 | quench nudge half-window |
 | `--quench-passes N` | 6 | max quench sweeps |
 | `--max-displacement MM` | – | cap each part within this of its original position |
+| default grid mode | on | snap part origins to Fusion's current main grid / 10 |
+| `--grid` | off | snap part origins to Fusion's current main grid |
+| `--nogrid` | off | disable part-origin grid snapping |
 | `--halo-weight W` | 0 | soft component-exclude spreading penalty for fanout room (off) |
 | `--halo-gap MM` | 0.5 | base spreading gap, scaled by √pin-count |
 | `--edge-weight W` | 0 | soft board-edge margin penalty (off) |
@@ -194,5 +199,18 @@ GROUP-select the parts to place first (see `src/selection.py`), and run with a
 board open in Fusion and the bridge reachable (see
 [fusion-bridge.md](fusion-bridge.md)).
 
+Grid snapping uses Fusion's current main grid at runtime. `Placer` writes a
+temporary ULP to `C:\tmp\steinmetz_grid_main.ulp`, runs it through
+`Electron.run "RUN 'C:/tmp/steinmetz_grid_main.ulp';"`, and reads
+`C:\tmp\steinmetz_grid_main.txt` back in the same bridge call. The ULP prints
+`B.grid.distance` and `B.grid.unitdist`; the placer converts that value to mm
+every run. The default placement grid is one tenth of that live grid, `--grid`
+uses the full live grid, and `--nogrid` skips snapping. This replaces
+alternate-grid snapping because Fusion's Electronics API does not expose
+alternate-grid distance/unit settings, and the Fusion ULP runtime available
+through the bridge has not provided a reliable alternate-grid value either.
+
 Use `scripts/evaluate_place.py` for live-board experiments when you want the
 same metrics and overlap checks without applying any `ROTATE`/`MOVE` commands.
+It uses the same live selection and grid-mode flags as `src/place.py`; with the
+current `Placer` API, the live grid query still happens inside `Placer`.

@@ -109,6 +109,23 @@ def run(_context):
 Commands that work this way include `MOVE`, `ROTATE`, `VALUE`, `CHANGE PACKAGE`,
 `ATTRIBUTE`, `EXPORT`, and `script <file>`.
 
+## Temporary ULP probes
+
+Some Electronics state is only available through the embedded EAGLE runtime. The
+same `Electron.run` path can run a temporary ULP that writes a result file on
+the Windows host, then the Fusion-side Python script reads that file back and
+prints it into the bridge response.
+
+Current users:
+
+- `src/selection.py` writes a temporary selection ULP under `C:\tmp`, runs it,
+  and reads `C:\tmp\steinmetz_selection.txt`. The ULP uses `ingroup(E)`, so it
+  sees GROUP-selected board elements, not Fusion's design-selection collection.
+- `src/place.py` writes `C:\tmp\steinmetz_grid_main.ulp`, runs it, and reads
+  `C:\tmp\steinmetz_grid_main.txt`. The ULP prints `B.grid.distance` and
+  `B.grid.unitdist`; the placer converts that live main-grid value to
+  millimeters on every placement run.
+
 ---
 *The handshake and write-path recipe were first reverse-engineered in the
 sibling Hendley project (`docs/fusion-notes.md`); this is the cleaned-up,

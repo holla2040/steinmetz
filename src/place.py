@@ -25,16 +25,21 @@ automatically. ``--only`` bypasses that with an explicit ref list.
 The objective is airwire length + a small crossing penalty; optional halo
 (spreading) and edge-margin terms are available but **off by default**. Rotation
 is chosen jointly with position in ``--rotate`` steps (default 90° => 0/90/180/270;
-``--rotate 1`` = free 1°). Because rotation depends on the EAGLE angle convention,
-after writing the ``ROTATE``/``MOVE``s (each terminated with ``;``) the tool
-re-reads the board and checks the **actual pad positions** of every moved part
-against its prediction — the gate that proves the transform matched Fusion.
-Changes are unsaved until you save in Fusion.
+``--rotate 1`` = free 1°). Placed origins snap to one tenth of Fusion's current
+main grid by default; use ``--grid`` for the full main grid or ``--nogrid`` to
+disable snapping. The grid value is queried from Fusion on every run. Because
+rotation depends on
+the EAGLE angle convention, after writing the ``ROTATE``/``MOVE``s (each
+terminated with ``;``) the tool re-reads the board and checks the **actual pad
+positions** of every moved part against its prediction — the gate that proves the
+transform matched Fusion. Changes are unsaved until you save in Fusion.
 
     python src/place.py                 # place the current selection (90° steps)
     python src/place.py --rotate 1      # let parts rotate freely, in 1° steps
     python src/place.py --only R4 R5 R8 # override the selection with these refs
     python src/place.py --refine-only   # quench the current layout, no re-seed
+    python src/place.py --grid          # snap origins to Fusion's main grid
+    python src/place.py --nogrid        # disable origin snapping
     python src/place.py --ignore-nets GND "VCC*"
 
 Run with a board open in Fusion.
@@ -59,6 +64,68 @@ def is_power(name: str, pin_count: int, extra: list[str]) -> bool:
     if _POWER.match(name) or any(fnmatch.fnmatch(name, p) for p in extra):
         return True
     return pin_count >= 8          # large fan-out => plane-like
+
+
+def _read_main_grid_mm(bridge: FusionBridge) -> float:
+    """Read the visible EAGLE main grid distance in millimeters."""
+    out_path = r"C:\tmp\steinmetz_grid_main.txt"
+    ulp_path = r"C:\tmp\steinmetz_grid_main.ulp"
+    out_fwd = out_path.replace("\\", "/")
+    ulp_fwd = ulp_path.replace("\\", "/")
+    ulp = f'''output("{out_fwd}", "wt") {{
+  board(B) {{
+    printf("%.12f\\n", B.grid.distance);
+    printf("%d\\n", B.grid.unitdist);
+  }}
+}}
+'''
+    run_cmd = f"Electron.run \"RUN '{ulp_fwd}';\""
+    script = "\n".join([
+        "import adsk.core, os",
+        "def run(_context):",
+        "    app = adsk.core.Application.get()",
+        f"    ulp_path = {ulp_path!r}",
+        f"    out_path = {out_path!r}",
+        "    try:",
+        "        os.remove(out_path)",
+        "    except OSError:",
+        "        pass",
+        "    with open(ulp_path, 'w') as f:",
+        f"        f.write({ulp!r})",
+        f"    app.executeTextCommand({run_cmd!r})",
+        "    print('__GRID_START__')",
+        "    try:",
+        "        print(open(out_path).read())",
+        "    except FileNotFoundError:",
+        "        print('__GRID_MISSING__')",
+        "    print('__GRID_END__')",
+    ])
+    msg = bridge.execute(script).get("message", "") or ""
+    if "__GRID_START__" not in msg or "__GRID_END__" not in msg:
+        raise RuntimeError(f"could not parse Fusion grid response: {msg!r}")
+    body = msg.split("__GRID_START__", 1)[1].split("__GRID_END__", 1)[0].strip()
+    if "__GRID_MISSING__" in body:
+        raise RuntimeError("Fusion did not produce a main-grid response")
+    try:
+        lines = body.splitlines()
+        grid = float(lines[0].strip())
+        unitdist = int(lines[1].strip())
+    except (IndexError, ValueError) as exc:
+        raise RuntimeError(f"invalid Fusion main-grid response: {body!r}") from exc
+    grid *= {0: 0.001, 1: 1.0, 2: 0.0254, 3: 25.4}.get(unitdist, 1.0)
+    if grid <= 0:
+        raise RuntimeError(f"Fusion returned a non-positive main grid: {grid:g}")
+    return grid
+
+
+def _resolve_grid_step(mode: str, main_grid: float) -> float | None:
+    if mode == "none":
+        return None
+    if mode == "grid":
+        return main_grid
+    if mode == "fine":
+        return main_grid / 10.0
+    raise ValueError(f"unknown grid mode {mode!r}")
 
 
 def mst_len(points: list[tuple[float, float]]) -> float:
@@ -143,7 +210,10 @@ class Placer:
                  margin: float, cross_weight: float = 2.0,
                  only: list[str] | None = None,
                  halo_weight: float = 0.0, halo_gap: float = 0.5,
-                 edge_weight: float = 0.0, edge_margin: float = 2.0):
+                 edge_weight: float = 0.0, edge_margin: float = 2.0,
+                 grid_step: float | None = None,
+                 grid_mode: str = "fine",
+                 bridge: FusionBridge | None = None):
         self.b = board
         self.clearance = clearance
         self.margin = margin
@@ -152,6 +222,14 @@ class Placer:
         self.halo_gap = halo_gap
         self.edge_weight = edge_weight
         self.edge_margin = edge_margin
+        self.fusion_grid_step = None
+        if grid_step is None and grid_mode != "none":
+            if bridge is None:
+                raise RuntimeError("grid snapping requires a live Fusion bridge")
+            self.fusion_grid_step = _read_main_grid_mm(bridge)
+            grid_step = _resolve_grid_step(grid_mode, self.fusion_grid_step)
+        self.grid_mode = grid_mode
+        self.grid_step = grid_step if grid_step and grid_step > 0 else None
         self.net_pads = board.net_pads()
         self.ignore = {sid for sid, pads in self.net_pads.items()
                        if is_power(board.signals.get(sid, ""), len(pads), ignore_nets)}
@@ -316,7 +394,23 @@ class Placer:
             x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
         return (c[0] + x1, c[1] + y1, c[0] + x2, c[1] + y2)
 
+    def _snap(self, c):
+        """Snap an element origin to the requested placement grid, if any."""
+        if not self.grid_step:
+            return c
+        g = self.grid_step
+        return (round(round(c[0] / g) * g, 6),
+                round(round(c[1] / g) * g, 6))
+
+    def _on_grid(self, c) -> bool:
+        if not self.grid_step:
+            return True
+        sx, sy = self._snap(c)
+        return abs(c[0] - sx) < 1e-6 and abs(c[1] - sy) < 1e-6
+
     def _fits(self, eid, c, placed, rotations=None):
+        if eid in self.movable and not self._on_grid(c):
+            return False
         bb = self._bbox(eid, c, rotations)
         bx0, by0, bx1, by1 = self.b.outline
         if not (bb[0] >= bx0 + self.margin and bb[1] >= by0 + self.margin
@@ -448,8 +542,9 @@ class Placer:
         o0 = self.orig[eid]
         cand_angles = [0.0] if eid in self.mirrored else self._angle_steps(angle_step)
         if not self._eid_nets(eid):                       # nothing to pull it
-            if self._fits(eid, o0, placed, {**rotations, eid: 0.0}):
-                return 0.0, o0
+            c0 = self._snap(o0)
+            if self._fits(eid, c0, placed, {**rotations, eid: 0.0}):
+                return 0.0, c0
             return self._nearest_legal(eid, o0, placed, rotations, angle_step, max_disp)
         bx0, by0, bx1, by1 = self.b.outline
         diag = math.hypot(bx1 - bx0, by1 - by0)
@@ -473,7 +568,12 @@ class Placer:
                     ring = [(ox + r * math.cos(2 * math.pi * t / k),
                              oy + r * math.sin(2 * math.pi * t / k))
                             for t in range(k)]
+                seen = set()
                 for c in ring:
+                    c = self._snap(c)
+                    if c in seen:
+                        continue
+                    seen.add(c)
                     if max_disp is not None and \
                             math.hypot(c[0] - o0[0], c[1] - o0[1]) > max_disp + 1e-9:
                         continue
@@ -508,12 +608,17 @@ class Placer:
                 ring = [(origin[0] + r * math.cos(2 * math.pi * t / k),
                          origin[1] + r * math.sin(2 * math.pi * t / k))
                         for t in range(k)]
+            seen = set()
             for c in ring:
+                c = self._snap(c)
+                if c in seen:
+                    continue
+                seen.add(c)
                 for a in cand_angles:
                     if self._fits(eid, c, placed, {**rotations, eid: a}):
                         return a, c
             r += 0.5
-        return 0.0, origin
+        return 0.0, self._snap(origin)
 
     def place(self, pos_step: float = 0.5, angle_step: float = 90.0,
               span: float = 3.0, max_disp=None):
@@ -677,8 +782,12 @@ class Placer:
                 cur_a = rotations[eid]
                 cand_angles = [0.0] if eid in self.mirrored else angles
                 best = (self._global_cost(centers, rotations), cx, cy, cur_a)
+                seen = set()
                 for dx, dy in offsets:
-                    nc = (cx + dx, cy + dy)
+                    nc = self._snap((cx + dx, cy + dy))
+                    if nc in seen:
+                        continue
+                    seen.add(nc)
                     if max_disp is not None and math.hypot(
                             nc[0] - self.orig[eid][0], nc[1] - self.orig[eid][1]) > max_disp + 1e-9:
                         continue
@@ -767,6 +876,15 @@ def main():
     ap.add_argument("--max-displacement", type=float, default=None, metavar="MM",
                     help="cap each part within this distance of its original "
                          "position (default: unbounded)")
+    grid_group = ap.add_mutually_exclusive_group()
+    ap.set_defaults(grid_mode="fine")
+    grid_group.add_argument("--grid", dest="grid_mode", action="store_const",
+                            const="grid",
+                            help="snap placed origins to Fusion's main grid")
+    grid_group.add_argument("--nogrid", dest="grid_mode", action="store_const",
+                            const="none",
+                            help="do not snap placed origins to a Fusion grid "
+                                 "(default snaps to main grid / 10)")
     ap.add_argument("--halo-weight", type=float, default=0.0, metavar="W",
                     help="soft ComponentExcludeTop/Bottom spreading penalty for fanout room "
                          "(default: 0 = off)")
@@ -794,11 +912,20 @@ def main():
                   "then re-run.")
             return
         print(f"Selected ({len(only)}): {', '.join(only)}")
+
     board = read_board(bridge)
     placer = Placer(board, args.ignore_nets, args.clearance, args.margin,
                     args.cross_weight, only=only,
                     halo_weight=args.halo_weight, halo_gap=args.halo_gap,
-                    edge_weight=args.edge_weight, edge_margin=args.edge_margin)
+                    edge_weight=args.edge_weight, edge_margin=args.edge_margin,
+                    grid_mode=args.grid_mode, bridge=bridge)
+    if placer.fusion_grid_step is None:
+        print("Placement grid: off")
+    else:
+        mode_desc = "grid/10" if args.grid_mode == "fine" else args.grid_mode
+        grid_desc = f"{placer.grid_step:g} mm ({mode_desc})"
+        print(f"Fusion grid: {placer.fusion_grid_step:g} mm")
+        print(f"Placement grid: {grid_desc}")
 
     if not placer.movable:
         print(f"None of those refs matched a part on the board: {', '.join(only)}")

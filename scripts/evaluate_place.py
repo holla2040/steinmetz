@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import inspect
 import math
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from board import read_board
 from bridge import FusionBridge
+from place import _read_main_grid_mm, _resolve_grid_step
 from selection import read_selection
 
 
@@ -26,6 +28,24 @@ def load_placer(path: str | None):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.Placer
+
+
+def make_placer(Placer, board, args, only, bridge):
+    sig = inspect.signature(Placer).parameters
+    kwargs = {
+        "only": only,
+    }
+    if "grid_mode" in sig:
+        kwargs["grid_mode"] = args.grid_mode
+    if "bridge" in sig:
+        kwargs["bridge"] = bridge
+    elif "grid_step" in sig:
+        main_grid = _read_main_grid_mm(bridge)
+        kwargs["grid_step"] = _resolve_grid_step(args.grid_mode, main_grid)
+    elif args.grid_mode != "none":
+        raise RuntimeError("grid snapping requires a placer that accepts grid settings")
+    return Placer(board, args.ignore_nets, args.clearance, args.margin,
+                  args.cross_weight, **kwargs)
 
 
 def overlaps(placer, centers, rotations):
@@ -66,14 +86,19 @@ def main():
     ap.add_argument("--max-displacement", type=float, default=None)
     ap.add_argument("--refine-only", action="store_true")
     ap.add_argument("--place-path", default=None)
+    grid_group = ap.add_mutually_exclusive_group()
+    ap.set_defaults(grid_mode="fine")
+    grid_group.add_argument("--grid", dest="grid_mode", action="store_const",
+                            const="grid")
+    grid_group.add_argument("--nogrid", dest="grid_mode", action="store_const",
+                            const="none")
     args = ap.parse_args()
 
     Placer = load_placer(args.place_path)
     bridge = FusionBridge().connect()
     only = args.only or read_selection(bridge)
     board = read_board(bridge)
-    placer = Placer(board, args.ignore_nets, args.clearance, args.margin,
-                    args.cross_weight, only=only)
+    placer = make_placer(Placer, board, args, only, bridge)
     before_len = placer.airwire(placer.orig)
     before_cross = placer.crossings(placer.orig)
     if hasattr(placer, "place"):
@@ -107,6 +132,13 @@ def main():
     bad = overlaps(placer, final, rotations)
     avg_move, max_move = movement_stats(placer, final)
     print(f"Selected: {', '.join(sorted(board.elements[e].name for e in placer.movable))}")
+    main_grid = getattr(placer, "fusion_grid_step", None)
+    grid_step = getattr(placer, "grid_step", None)
+    if main_grid is not None:
+        print(f"Fusion grid: {main_grid:g} mm")
+    mode_desc = "grid/10" if args.grid_mode == "fine" else args.grid_mode
+    grid_desc = "off" if grid_step is None else f"{grid_step:g} mm ({mode_desc})"
+    print(f"Placement grid: {grid_desc}")
     print(f"Signal-airwire: {before_len:.1f} -> {after_len:.1f} mm")
     print(f"Crossings: {before_cross} -> {after_cross}")
     print(f"Movement: avg {avg_move:.2f} mm, max {max_move:.2f} mm")

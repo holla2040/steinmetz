@@ -46,11 +46,16 @@ firing**; present ⇒ a run is already in progress (continue it).
   line like: `Signal-airwire: <BEFORE> mm  ->  <AFTER> mm  (<pct>%)`. It is
   near-optimal in a **single pass** and idempotent, so the loop typically
   converges in 1–2 firings. Component-exclude clearance (`--clearance`, default
-  0.1 mm) and board margin (`--margin`, default 1.0 mm) keep parts legal — tune
+  0.1 mm) and board margin (`--margin`, default 1.0 mm) keep parts legal. Part
+  origins snap to one tenth of Fusion's current main grid by default; `--grid`
+  uses the full main grid and `--nogrid` disables snapping. `place.py` must query
+  the main grid inside every run because that value is live Fusion state; the
+  current implementation does this inside `Placer` by generating and running
+  `C:\tmp\steinmetz_grid_main.ulp` (`B.grid.distance` / `B.grid.unitdist`). Tune
   only if you see overlaps/edge issues.
 - `python src/screenshot.py C:\tmp\place_<n>.png` snapshots the board (readable
-  at `~/tmp/place_<n>.png`). Use the Read tool to VIEW it and sanity-check the
-  layout.
+  at `/mnt/c/tmp/place_<n>.png`; `~/tmp/place_<n>.png` also works on this host).
+  Use the Read tool to VIEW it and sanity-check the layout.
 
 **First firing** (state file absent): before the first placement pass, capture a
 baseline screenshot to `C:\tmp\place_before.png` and create

@@ -19,7 +19,7 @@ python examples/read_design.py    # connect + summarize the open design
 python examples/run_command.py    # prove the write path (harmless WINDOW FIT)
 python src/selection.py           # show the current GROUP-selected parts
 python src/place.py               # place the selected parts (writes MOVEs, then verifies)
-python src/screenshot.py          # snapshot the board to ~/tmp for a look
+python src/screenshot.py          # snapshot the board to C:\tmp; read at /mnt/c/tmp
 ```
 
 - **There is no automated test suite, linter, or CI.** "Verify" everywhere means
@@ -53,7 +53,11 @@ Three layers, each built on the one below, plus a `.scr` helper:
 - **`src/place.py` (`Placer`) — a tool.** Minimal-airwire placement of the
   **selected** parts (the rest frozen): chooses each part's position and
   rotation jointly from its incident nets, legalizes overlaps against
-  component-exclude regions (`--clearance` default 0.1 mm), writes
+  component-exclude regions (`--clearance` default 0.1 mm), snaps part origins
+  to one tenth of Fusion's current main grid by default (`--grid` for the full
+  main grid, `--nogrid` to disable; `Placer` queries the live Fusion main grid
+  every run by writing/running `C:\tmp\steinmetz_grid_main.ulp`, which reads
+  `B.grid.distance` and `B.grid.unitdist`), writes
   `ROTATE`/`MOVE`s back, then re-reads to verify pad positions. Selection comes
   from `selection.py`;
   `--only REF...` overrides it. Nothing selected → nothing placed. Methodology
@@ -80,7 +84,8 @@ Three layers, each built on the one below, plus a `.scr` helper:
   to a PNG for a look (the place → screenshot verify loop). `app.activeViewport`
   is `None` in the PCB Editor, so `saveAsImageFile` can't be used — it fires
   `WINDOW FIT` then the EAGLE `EXPORT IMAGE '<path>' <dpi>` command. Writes to
-  `C:\tmp` (== WSL `~/tmp` on this host) so the PNG reads straight back.
+  `C:\tmp`; read the PNG from WSL at `/mnt/c/tmp` (`~/tmp` is a symlink there on
+  this host).
 
 Future tools (swaps, inventory checks, exports) should be new modules under
 `src/` that take a `FusionBridge` / `Board` and follow the same loop. Anything
