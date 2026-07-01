@@ -54,9 +54,10 @@ running Fusion Electronics session, in both directions.
 > built on top of it.
 
 On top of that base, tools get added — placement, swaps, checks, exports. The
-first proof of concept was a minimal-airwire **parts placer** that read a BGA
-board, pulled its passives toward the pads they connect to, and wrote the moves
-back: 2060 → 376 mm of ratsnest, end to end over this bridge.
+first proof of concept was a minimal-airwire **parts placer** that reads a live
+board, pulls the selected parts toward the pads they connect to, and writes the
+moves back over this bridge — collapsing a fan of long airwires into short ones,
+end to end.
 
 ## The path
 
