@@ -50,8 +50,9 @@ import argparse
 import fnmatch
 import math
 import re
+import time
 
-from board import Board, read_board
+from board import Board, ContactBox, read_board
 from bridge import FusionBridge
 from selection import read_selection
 
@@ -64,6 +65,36 @@ def is_power(name: str, pin_count: int, extra: list[str]) -> bool:
     if _POWER.match(name) or any(fnmatch.fnmatch(name, p) for p in extra):
         return True
     return pin_count >= 8          # large fan-out => plane-like
+
+
+def format_elapsed(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:5.1f}s"
+    minutes, secs = divmod(seconds, 60)
+    return f"{int(minutes):2d}m{secs:04.1f}s"
+
+
+class Progress:
+    """Throttled elapsed-time progress lines for long placement searches."""
+
+    def __init__(self, start: float | None = None, interval: float = 10.0):
+        self.start = start if start is not None else time.monotonic()
+        self.interval = interval
+        self.last = 0.0
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.start
+
+    def log(self, message: str) -> None:
+        now = time.monotonic()
+        self.last = now
+        print(f"[{format_elapsed(now - self.start)}] {message}", flush=True)
+
+    def tick(self, message: str) -> None:
+        now = time.monotonic()
+        if now - self.last >= self.interval:
+            self.last = now
+            print(f"[{format_elapsed(now - self.start)}] {message}", flush=True)
 
 
 def _read_main_grid_mm(bridge: FusionBridge) -> float:
@@ -205,12 +236,42 @@ def segments_cross(s1, s2) -> bool:
     return d1 * d2 < 0 and d3 * d4 < 0
 
 
+def _project(poly, axis):
+    vals = [p[0] * axis[0] + p[1] * axis[1] for p in poly]
+    return min(vals), max(vals)
+
+
+def _poly_axes(poly):
+    for i, p in enumerate(poly):
+        q = poly[(i + 1) % len(poly)]
+        ex, ey = q[0] - p[0], q[1] - p[1]
+        n = math.hypot(ex, ey)
+        if n > 1e-12:
+            yield (-ey / n, ex / n)
+
+
+def polygons_overlap(a, b, clearance: float = 0.0) -> bool:
+    """Separating-axis overlap for convex placement polygons.
+
+    ``clearance`` is treated as a required gap along at least one separating
+    axis. This avoids the false positives caused by testing a 45° part's enlarged
+    axis-aligned bounding box against its neighbors.
+    """
+    for axis in list(_poly_axes(a)) + list(_poly_axes(b)):
+        amin, amax = _project(a, axis)
+        bmin, bmax = _project(b, axis)
+        if amax + clearance <= bmin or bmax + clearance <= amin:
+            return False
+    return True
+
+
 class Placer:
     def __init__(self, board: Board, ignore_nets: list[str], clearance: float,
                  margin: float, cross_weight: float = 2.0,
                  only: list[str] | None = None,
                  halo_weight: float = 0.0, halo_gap: float = 0.5,
                  edge_weight: float = 0.0, edge_margin: float = 2.0,
+                 orientation_weight: float = 0.15,
                  grid_step: float | None = None,
                  grid_mode: str = "fine",
                  bridge: FusionBridge | None = None):
@@ -222,6 +283,7 @@ class Placer:
         self.halo_gap = halo_gap
         self.edge_weight = edge_weight
         self.edge_margin = edge_margin
+        self.orientation_weight = orientation_weight
         self.fusion_grid_step = None
         if grid_step is None and grid_mode != "none":
             if bridge is None:
@@ -373,6 +435,54 @@ class Placer:
             total += mst_len(pts)
         return total
 
+    @staticmethod
+    def _centroid(points: list[tuple[float, float]]) -> tuple[float, float]:
+        return (sum(p[0] for p in points) / len(points),
+                sum(p[1] for p in points) / len(points))
+
+    def _part_orientation_penalty_at(self, eid, a, centers, rotations) -> float:
+        """Tie-break two-terminal parts toward the direction of their anchors.
+
+        A 2-pin passive connected to two IC pins often has a very flat airwire
+        objective: several rotations can differ by only microns after the centre
+        is moved. The pure MST length then accepts visually wrong cardinal
+        rotations around a 45° IC. This returns a small length-like penalty that
+        is zero when the part's directed pad vector points at the two connected
+        anchor centroids, and grows as it points away. It is deliberately small
+        and only participates in optimization; printed airwire remains pure MST.
+        """
+        entries = self._eid_nets(eid)
+        if len(entries) != 2:
+            return 0.0
+
+        own_pts = []
+        other_pts = []
+        for _sid, own, others in entries:
+            if not own or not others:
+                return 0.0
+            own_pts.append(self._centroid(list(own)))
+            other_pts.append(self._centroid([
+                self._pad_global(p, centers, rotations) for p in others
+            ]))
+
+        ox0, oy0 = own_pts[0]
+        ox1, oy1 = own_pts[1]
+        ovx, ovy = self._rot(ox1 - ox0, oy1 - oy0, a)
+        tvx = other_pts[1][0] - other_pts[0][0]
+        tvy = other_pts[1][1] - other_pts[0][1]
+        olen = math.hypot(ovx, ovy)
+        tlen = math.hypot(tvx, tvy)
+        if olen < 1e-9 or tlen < 1e-9:
+            return 0.0
+
+        cos_delta = max(-1.0, min(1.0, (ovx * tvx + ovy * tvy) / (olen * tlen)))
+        return olen * (1.0 - cos_delta)
+
+    def _part_cost_at(self, eid, c, a, centers, rotations) -> float:
+        return (self._part_airwire_at(eid, c, a, centers, rotations)
+                + self.orientation_weight
+                * self._part_orientation_penalty_at(eid, a, centers, rotations))
+
     def _part_airwire(self, eid, centers, rotations) -> float:
         """eid's own airwire at its current centre/rotation."""
         a = rotations.get(eid, 0.0) if rotations else 0.0
@@ -385,7 +495,7 @@ class Placer:
 
     def _bbox(self, eid, c, rotations=None):
         x1, y1, x2, y2 = self.b.placement_bbox(eid)
-        a = rotations.get(eid, 0) if rotations else 0
+        a = self.b.elements[eid].angle + (rotations.get(eid, 0) if rotations else 0)
         if a:
             corners = [self._rot(x1, y1, a), self._rot(x2, y1, a),
                        self._rot(x2, y2, a), self._rot(x1, y2, a)]
@@ -393,6 +503,26 @@ class Placer:
             ys = [p[1] for p in corners]
             x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
         return (c[0] + x1, c[1] + y1, c[0] + x2, c[1] + y2)
+
+    def _placement_boxes(self, eid):
+        boxes = self.b.exclude_boxes.get(eid)
+        if boxes:
+            return [ContactBox(min(b.x1 for b in boxes), min(b.y1 for b in boxes),
+                               max(b.x2 for b in boxes), max(b.y2 for b in boxes))]
+        boxes = self.b.contact_boxes.get(eid)
+        if boxes:
+            return boxes
+        return [ContactBox(*self.b.placement_bbox(eid))]
+
+    def _polys(self, eid, c, rotations=None):
+        a = self.b.elements[eid].angle + (rotations.get(eid, 0) if rotations else 0)
+        polys = []
+        for b in self._placement_boxes(eid):
+            corners = [(b.x1, b.y1), (b.x2, b.y1), (b.x2, b.y2), (b.x1, b.y2)]
+            if a:
+                corners = [self._rot(x, y, a) for x, y in corners]
+            polys.append([(c[0] + x, c[1] + y) for x, y in corners])
+        return polys
 
     def _snap(self, c):
         """Snap an element origin to the requested placement grid, if any."""
@@ -417,11 +547,16 @@ class Placer:
                 and bb[2] <= bx1 - self.margin and bb[3] <= by1 - self.margin):
             return False
         g = self.clearance
+        polys = self._polys(eid, c, rotations)
         for oe, oc in placed.items():
             o = self._bbox(oe, oc, rotations)
-            if not (bb[2] + g <= o[0] or o[2] + g <= bb[0]
+            if (bb[2] + g <= o[0] or o[2] + g <= bb[0]
                     or bb[3] + g <= o[1] or o[3] + g <= bb[1]):
-                return False
+                continue
+            for p in polys:
+                if any(polygons_overlap(p, q, g)
+                       for q in self._polys(oe, oc, rotations)):
+                    return False
         return True
 
     @staticmethod
@@ -475,8 +610,15 @@ class Placer:
     def _global_cost(self, centers, rotations) -> float:
         """Full placement objective: airwire + crossing penalty + optional
         halo/edge spreading. Equals :meth:`_cost` when halo/edge weights are 0."""
+        orient = 0.0
+        if self.orientation_weight:
+            orient = self.orientation_weight * sum(
+                self._part_orientation_penalty_at(eid, rotations.get(eid, 0.0),
+                                                  centers, rotations)
+                for eid in self.movable)
         return (self.airwire(centers, rotations)
                 + self.cross_weight * self.crossings(centers, rotations)
+                + orient
                 + self._spread_penalty(centers, rotations)
                 + self._edge_penalty(centers, rotations))
 
@@ -533,7 +675,8 @@ class Placer:
         return sorted(self.movable, key=key)
 
     def _optimal_region(self, eid, centers, rotations, placed,
-                        pos_step, angle_step, span, max_disp):
+                        pos_step, angle_step, span, max_disp,
+                        progress: Progress | None = None):
         """The (rotation-delta, centre) minimizing eid's own airwire, legal
         against ``placed``. Sweeps rotations; per rotation runs an outward ring
         from the implied-centre centroid, keeping the min-cost legal point and
@@ -551,6 +694,8 @@ class Placer:
         r_cap = min(diag, max_disp) if max_disp is not None else diag
         best = None                                       # (cost, angle, centre)
         for a in cand_angles:
+            if progress:
+                progress.tick(f"searching {self.b.elements[eid].name} at R{a:g}")
             implied = self._implied_centers(eid, a, centers, rotations)
             if not implied:
                 continue
@@ -579,7 +724,7 @@ class Placer:
                         continue
                     if not self._fits(eid, c, placed, rot_trial):
                         continue
-                    cost = self._part_airwire_at(eid, c, a, centers, rotations)
+                    cost = self._part_cost_at(eid, c, a, centers, rotations)
                     if best is None or cost < best[0] - 1e-12:
                         best = (cost, a, c)
                     if r_first is None:
@@ -621,7 +766,8 @@ class Placer:
         return 0.0, self._snap(origin)
 
     def place(self, pos_step: float = 0.5, angle_step: float = 90.0,
-              span: float = 3.0, max_disp=None):
+              span: float = 3.0, max_disp=None,
+              progress: Progress | None = None):
         """Optimal-region placement, in three steps:
 
         1. **ideal** — each part at the ``(rotation, centre)`` minimizing its OWN
@@ -638,25 +784,37 @@ class Placer:
         anchors = {e: self.orig[e] for e in self.anchors}
         centers = dict(self.orig)
         rotations = {e: 0.0 for e in self.movable}
-        for eid in self._placement_order():
+        order = self._placement_order()
+        if progress:
+            progress.log(f"seeding {len(order)} part(s)")
+        for i, eid in enumerate(order, 1):
+            if progress:
+                progress.tick(f"seeding {i}/{len(order)} {self.b.elements[eid].name}")
             a, c = self._optimal_region(eid, centers, rotations, anchors,
-                                        pos_step, angle_step, span, max_disp)
+                                        pos_step, angle_step, span, max_disp,
+                                        progress)
             rotations[eid] = a
             centers[eid] = c
+        if progress:
+            progress.log("spreading overlaps")
         centers = self._spread(centers, rotations)
         centers, rotations = self._settle(centers, rotations, pos_step,
-                                          angle_step, max(span, 8.0), max_disp)
+                                          angle_step, max(span, 8.0), max_disp,
+                                          progress=progress)
         # HARD legality: _spread can push a part into an anchor hard box, and
         # _settle won't move an illegal part to a legal-but-longer spot — so force
         # any overlapping part to its nearest legal spot, then re-settle. Fusion
         # offsets a part whose MOVE target overlaps, so a legal output is what
         # makes every part land.
-        centers, rotations = self._legalize(centers, rotations, angle_step)
+        centers, rotations = self._legalize(centers, rotations, angle_step,
+                                            progress=progress)
         centers, rotations = self._settle(centers, rotations, pos_step,
-                                          angle_step, max(span, 8.0), max_disp)
-        return self._legalize(centers, rotations, angle_step)
+                                          angle_step, max(span, 8.0), max_disp,
+                                          progress=progress)
+        return self._legalize(centers, rotations, angle_step, progress=progress)
 
-    def _legalize(self, centers, rotations, angle_step, passes: int = 40):
+    def _legalize(self, centers, rotations, angle_step, passes: int = 40,
+                  progress: Progress | None = None):
         """Force every movable part that overlaps another part (or the board
         edge) to its nearest legal spot, keeping rotation — a guaranteed
         no-overlap output. Required for correctness: Fusion's ``MOVE`` offsets a
@@ -664,7 +822,9 @@ class Placer:
         pad-position gate."""
         centers = dict(centers)
         rotations = dict(rotations)
-        for _ in range(passes):
+        for p in range(passes):
+            if progress:
+                progress.tick(f"legalizing pass {p + 1}/{passes}")
             moved = False
             for eid in self._placement_order():
                 others = {e: c for e, c in centers.items() if e != eid}
@@ -733,7 +893,7 @@ class Placer:
         return centers
 
     def _settle(self, centers, rotations, pos_step, angle_step, span, max_disp,
-                passes: int = 25):
+                passes: int = 25, progress: Progress | None = None):
         """Coordinate descent: repeatedly re-place each movable part at its
         optimal region against all the OTHER parts, keeping only strict airwire
         improvements. Recovers the airwire the spread step cost and lets parts
@@ -741,15 +901,18 @@ class Placer:
         centers = dict(centers)
         rotations = dict(rotations)
         order = self._placement_order()
-        for _ in range(passes):
+        for p in range(passes):
+            if progress:
+                progress.tick(f"settling pass {p + 1}/{passes}")
             moved = False
             for eid in order:
                 others = {e: c for e, c in centers.items() if e != eid}
-                before = self._part_airwire_at(eid, centers[eid], rotations[eid],
-                                               centers, rotations)
+                before = self._part_cost_at(eid, centers[eid], rotations[eid],
+                                            centers, rotations)
                 a, c = self._optimal_region(eid, centers, rotations, others,
-                                            pos_step, angle_step, span, max_disp)
-                if self._part_airwire_at(eid, c, a, centers, rotations) < before - 1e-9:
+                                            pos_step, angle_step, span, max_disp,
+                                            progress)
+                if self._part_cost_at(eid, c, a, centers, rotations) < before - 1e-9:
                     centers[eid] = c
                     rotations[eid] = a
                     moved = True
@@ -759,7 +922,8 @@ class Placer:
 
     def improve(self, centers, rotations, *, nudge: float = 1.5,
                 pos_step: float = 0.5, angle_step: float = 90.0,
-                passes: int = 6, allow_swap: bool = True, max_disp=None):
+                passes: int = 6, allow_swap: bool = True, max_disp=None,
+                progress: Progress | None = None):
         """Zero-temperature quench: sweep parts, accept only strict global-cost
         improvements. Move set: nudge within a ``±nudge`` box, rotate, and
         same-footprint swap. Resolves the residual coupling the per-part seed
@@ -773,7 +937,11 @@ class Placer:
         k = int(round(nudge / pos_step))
         offsets = [(ix * pos_step, iy * pos_step)
                    for ix in range(-k, k + 1) for iy in range(-k, k + 1)]
-        for _ in range(passes):
+        if progress:
+            progress.log(f"quenching up to {passes} pass(es)")
+        for p in range(passes):
+            if progress:
+                progress.tick(f"quenching pass {p + 1}/{passes}")
             changed = False
             # nudge + rotate, one part at a time
             for eid in order:
@@ -841,6 +1009,7 @@ class Placer:
 
 
 def main():
+    started = time.monotonic()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rotate", type=float, default=90.0, metavar="DEG",
@@ -898,12 +1067,15 @@ def main():
     if args.rotate <= 0:
         ap.error("--rotate step must be a positive number of degrees")
 
+    def setting(label: str, value: str) -> None:
+        print(f"{label + ':':<15} {value}")
+
     bridge = FusionBridge().connect()
     # The selection IS the input. --only is just a manual override of it; with
     # neither, there's nothing to place.
     if args.only:
         only = list(args.only)
-        print(f"Placing ({len(only)}): {', '.join(only)}")
+        setting("Selected", f"{len(only)} ({', '.join(only)})")
     else:
         only = read_selection(bridge)
         if not only:
@@ -911,7 +1083,7 @@ def main():
                   "GROUP-select the parts to place (rubber-band Group tool), "
                   "then re-run.")
             return
-        print(f"Selected ({len(only)}): {', '.join(only)}")
+        setting("Selected", f"{len(only)} ({', '.join(only)})")
 
     board = read_board(bridge)
     placer = Placer(board, args.ignore_nets, args.clearance, args.margin,
@@ -920,25 +1092,28 @@ def main():
                     edge_weight=args.edge_weight, edge_margin=args.edge_margin,
                     grid_mode=args.grid_mode, bridge=bridge)
     if placer.fusion_grid_step is None:
-        print("Placement grid: off")
+        setting("Placement grid", "off")
     else:
         mode_desc = "grid/10" if args.grid_mode == "fine" else args.grid_mode
         grid_desc = f"{placer.grid_step:g} mm ({mode_desc})"
-        print(f"Fusion grid: {placer.fusion_grid_step:g} mm")
-        print(f"Placement grid: {grid_desc}")
+        setting("Fusion grid", f"{placer.fusion_grid_step:g} mm")
+        setting("Placement grid", grid_desc)
+    setting("Rotation step", f"{args.rotate:g} deg")
+    progress = Progress(started)
 
     if not placer.movable:
         print(f"None of those refs matched a part on the board: {', '.join(only)}")
         return
 
-    print(f"Board {board.outline[2]-board.outline[0]:.0f} x "
-          f"{board.outline[3]-board.outline[1]:.0f} mm · {len(board.elements)} parts · "
-          f"{len(board.net_pads())} nets ({len(placer.ignore)} power/plane ignored)")
+    setting("Board", f"{board.outline[2]-board.outline[0]:.0f} x "
+            f"{board.outline[3]-board.outline[1]:.0f} mm · {len(board.elements)} parts · "
+            f"{len(board.net_pads())} nets ({len(placer.ignore)} power/plane ignored)")
     placing = sorted(board.elements[e].name for e in placer.movable)
-    print(f"Placing: {', '.join(placing)} ({len(placer.anchors)} parts frozen)")
+    setting("Placing", f"{', '.join(placing)} ({len(placer.anchors)} parts frozen)")
 
     before_len = placer.airwire(placer.orig)
     before_cross = placer.crossings(placer.orig)
+    progress.log("optimizing placement")
     if args.refine_only:
         # Quench the layout as it sits, bounded so it stays "your placement, tidied".
         md = args.max_displacement if args.max_displacement is not None else 5.0
@@ -946,14 +1121,18 @@ def main():
         rotations = {e: 0.0 for e in placer.movable}
         final, rotations = placer.improve(final, rotations, nudge=args.nudge,
                                           pos_step=args.pos_step, angle_step=args.rotate,
-                                          passes=args.quench_passes, max_disp=md)
+                                          passes=args.quench_passes, max_disp=md,
+                                          progress=progress)
     else:
         final, rotations = placer.place(pos_step=args.pos_step, angle_step=args.rotate,
-                                        span=args.span, max_disp=args.max_displacement)
+                                        span=args.span, max_disp=args.max_displacement,
+                                        progress=progress)
         final, rotations = placer.improve(final, rotations, nudge=args.nudge,
                                           pos_step=args.pos_step, angle_step=args.rotate,
                                           passes=args.quench_passes,
-                                          max_disp=args.max_displacement)
+                                          max_disp=args.max_displacement,
+                                          progress=progress)
+    progress.log("scoring final placement")
     after_len = placer.airwire(final, rotations)
     after_cross = placer.crossings(final, rotations)
     pct = (100 * (before_len - after_len) / before_len) if before_len else 0.0
@@ -989,9 +1168,11 @@ def main():
             cmds.append(f"ROTATE R{rot:g} '{name}'")
         if d > 0.01:
             cmds.append(f"MOVE {name} ({nx} {ny})")
+    progress.log(f"applying {len(cmds)} command(s) over the bridge")
     print(f"\nApplying {len(cmds)} command(s) over the bridge...")
     bridge.run_eagle_batch(cmds, grid="MM")
 
+    progress.log("verifying written placement")
     after_board = read_board(bridge)
     by_name = after_board.by_name()
     ok = sum(1 for name, nx, ny, _, _, _ in actions
@@ -1019,6 +1200,7 @@ def main():
               "sign). Inspect these parts before saving.")
     else:
         print(f"Pad-position check passed for all {len(actions)} part(s).")
+    print(f"Elapsed: {format_elapsed(time.monotonic() - started)}")
     print("Changes are unsaved — save in Fusion to keep them.")
 
 

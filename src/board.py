@@ -73,7 +73,7 @@ class Pad:
 
 @dataclass
 class ContactBox:
-    """One package contact's local copper/body box in the element's current frame."""
+    """One package contact/body box in package-local coordinates."""
     x1: float
     y1: float
     x2: float
@@ -266,15 +266,8 @@ def read_board(bridge: FusionBridge) -> Board:
                 (elem.package_object_id, str(c.get("name") or "")),
                 (default_dx, default_dy))
             hx, hy = dx / 2, dy / 2
-            corners = []
-            for px, py in ((c["x"] - hx, c["y"] - hy),
-                           (c["x"] + hx, c["y"] - hy),
-                           (c["x"] + hx, c["y"] + hy),
-                           (c["x"] - hx, c["y"] + hy)):
-                corners.append(_rot(px, py, elem.angle))
-            xs = [p[0] for p in corners]
-            ys = [p[1] for p in corners]
-            boxes.append(ContactBox(min(xs), min(ys), max(xs), max(ys)))
+            boxes.append(ContactBox(c["x"] - hx, c["y"] - hy,
+                                    c["x"] + hx, c["y"] + hy))
         if boxes:
             contact_boxes[eid] = boxes
 
@@ -313,12 +306,7 @@ def read_board(bridge: FusionBridge) -> Board:
             boxes = exclude_by_pkg_layer.get((elem.package_object_id, exclude_top), [])
         if not boxes:
             continue
-        rotated = []
-        for b in boxes:
-            rotated.append(_rotated_box(
-                [(b.x1, b.y1), (b.x2, b.y1), (b.x2, b.y2), (b.x1, b.y2)],
-                elem.angle))
-        exclude_boxes[eid] = rotated
+        exclude_boxes[eid] = boxes
 
     outline_wires = [w for w in wires if w.get("layer") == OUTLINE_LAYER]
     if outline_wires:

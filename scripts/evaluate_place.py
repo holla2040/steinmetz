@@ -51,14 +51,18 @@ def make_placer(Placer, board, args, only, bridge):
 def overlaps(placer, centers, rotations):
     bad = []
     items = sorted(placer.b.elements, key=lambda e: placer.b.elements[e].name)
-    for i, ei in enumerate(items):
-        bi = placer._bbox(ei, centers[ei], rotations)
-        for ej in items[i + 1:]:
-            bj = placer._bbox(ej, centers[ej], rotations)
-            g = placer.clearance
-            if not (bi[2] + g <= bj[0] or bj[2] + g <= bi[0]
-                    or bi[3] + g <= bj[1] or bj[3] + g <= bi[1]):
-                bad.append((placer.b.elements[ei].name, placer.b.elements[ej].name))
+    for ei in items:
+        others = {e: centers[e] for e in items if e != ei}
+        if placer._fits(ei, centers[ei], others, rotations):
+            continue
+        for ej in items:
+            if ej == ei:
+                continue
+            if not placer._fits(ei, centers[ei], {ej: centers[ej]}, rotations):
+                pair = tuple(sorted((placer.b.elements[ei].name,
+                                     placer.b.elements[ej].name)))
+                if pair not in bad:
+                    bad.append(pair)
     return bad
 
 
