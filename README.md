@@ -60,6 +60,12 @@ parts, respects package `ComponentExcludeTop`/`ComponentExcludeBottom` placement
 regions, and writes the moves back over this bridge — collapsing a fan of long
 airwires into short ones, end to end.
 
+The intended placement workflow is anchor-first: manually put the IC or other
+reference part where it belongs, leave that anchor **unselected**, then
+GROUP-select only the surrounding parts you want Steinmetz to place toward it.
+The placer moves exactly the selected parts and treats every unselected part,
+including the IC, as frozen context.
+
 ## The path
 
 ```mermaid
