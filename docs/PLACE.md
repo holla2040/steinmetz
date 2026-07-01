@@ -10,7 +10,7 @@ By default it is **translation-only**; with `--rotate` it adds a 90°-step
 
 ## Iterative tightening loop
 
-To tighten a GROUP-selected sub-circuit until it converges, run the ready-made
+To tighten a GROUP-selected set of parts until it converges, run the ready-made
 `/loop` prompt in [`tighten-placement.md`](tighten-placement.md): start a fresh
 agent and enter **`/loop follow docs/tighten-placement.md`**. The invocation is
 the same every firing — the prompt is self-contained and tracks progress in

@@ -8,9 +8,11 @@ placement passes until one pass changes total signal-airwire length by less than
 
 ## How to run
 
-1. In Fusion's Board editor, **GROUP-select** the sub-circuit parts (rubber-band
-   Group tool — *not* a single click). For "place a sub-circuit around an IC",
-   group the IC's connected parts but **not** the IC, so the IC stays frozen.
+1. In Fusion's Board editor, **GROUP-select** the parts you want placed
+   (rubber-band Group tool — *not* a single click). `place.py` moves *exactly*
+   what's in the group and freezes everything else, so group precisely the parts
+   you want moved. (What to group is your call — e.g. leave an IC out of the
+   group to keep it fixed, or include it to let it move too.)
 2. Start a fresh agent and enter:
 
    ```
@@ -33,9 +35,10 @@ firing**; present ⇒ a run is already in progress (continue it).
   say so (that's the environment, not the code).
 - Setup each run: `cd /home/holla/steinmetz && source .venv/bin/activate`
 - The parts to place are GROUP-selected in Fusion (rubber-band Group tool, not a
-  click). `python src/selection.py` prints them. If it prints nothing, STOP and
-  tell the user to GROUP-select the sub-circuit parts (group the IC's connected
-  parts but NOT the IC).
+  click). `python src/selection.py` prints them. Place **exactly** those parts —
+  whatever the user grouped is the intended selection; do not second-guess or
+  add/remove parts. If it prints nothing, STOP and tell the user to GROUP-select
+  the parts to place.
 - `python src/place.py --rotate 90` places ONLY the selected parts (freezes
   everything else), tries 90° rotations, writes ROTATE/MOVEs over the bridge,
   re-reads and verifies pad positions, and prints a line like:
