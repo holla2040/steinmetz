@@ -23,7 +23,8 @@ python src/screenshot.py          # snapshot the board to C:\tmp; read at /mnt/c
 ```
 
 The top-level `Makefile` wraps these as thin aliases (`make setup`, `make read`,
-`make place`, `make screenshot`, `make selection`; `make help` lists them). It
+`make place`, `make screenshot`, `make selection`, `make validate`; `make help`
+lists them). It
 defaults to the `.venv` interpreter so targets run without activating first. The
 tools are flag-driven, so to pass options call the script directly
 (`.venv/bin/python src/place.py --only U1`) rather than through `make`.

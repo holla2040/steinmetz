@@ -112,8 +112,10 @@ flowchart LR
 | `src/board.py` | Read a live board into a structured model — elements, connected pads, nets, packages, component-exclude geometry, outline. The shared "what's on the board" layer. |
 | `src/selection.py` | Read the user's live selection over the bridge — GROUP-select parts in Fusion and a ULP (`ingroup()`) captures their refs. The "what's selected" layer. |
 | `src/place.py` | **Tool:** minimal-airwire placement of the **selected** parts (everything else frozen) — chooses position and rotation jointly, snaps origins to a live Fusion-derived grid, legalizes against component-exclude regions, writes `ROTATE`/`MOVE`s back, verifies. Methodology + before/after: [docs/PLACE.md](docs/PLACE.md). |
+| `src/placevec.py` | The placer's numpy engine — the optimization loops, batched (seconds instead of minutes; even `--rotate 1` is tractable). The scalar methods on `Placer` remain the readable spec. How and why: [docs/PLACE-VECTOR.md](docs/PLACE-VECTOR.md). |
 | `src/screenshot.py` | Snapshot the board to a PNG (`WINDOW FIT` + EAGLE `EXPORT IMAGE`) for visual verification; Fusion writes to `C:\tmp`, read from WSL at `/mnt/c/tmp` (`~/tmp` on this host). |
 | `scripts/evaluate_place.py` | Read-only placement evaluator for live-board experiments; computes the candidate and overlap report without writing `MOVE`/`ROTATE` commands. |
+| `scripts/validate_placevec.py` | Read-only spec check (`make validate`): asserts the numpy engine agrees with `Placer`'s scalar methods on randomized states of the live board. |
 | `docs/fusion-bridge.md` | The verified handshake + write-path recipe and the gotchas behind every rule. |
 | `examples/` | `read_design.py` (read + summarize), `run_command.py` (prove the write path). |
 
@@ -164,5 +166,6 @@ either.
 
 The bridge — read, execute, and the EAGLE `.scr`/command write path — is working
 and verified against a live design, and the first real tool (`src/place.py`,
-minimal-airwire placement) runs on top of it end to end. Next up: swaps,
+minimal-airwire placement) runs on top of it end to end — a 23-part placement
+optimizes in ~2 s on the numpy engine (was ~3.5 min scalar). Next up: swaps,
 inventory checks, exports.
