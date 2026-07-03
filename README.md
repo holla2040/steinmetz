@@ -169,3 +169,9 @@ and verified against a live design, and the first real tool (`src/place.py`,
 minimal-airwire placement) runs on top of it end to end — a 23-part placement
 optimizes in ~2 s on the numpy engine (was ~3.5 min scalar). Next up: swaps,
 inventory checks, exports.
+
+## Acknowledgments
+
+[**KiCadRoutingTools**](https://github.com/drandyhaas/KiCadRoutingTools) by
+[`drandyhaas`](https://github.com/drandyhaas) was used as a reference to get this
+project started.

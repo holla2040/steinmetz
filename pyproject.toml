@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "steinmetz"
 version = "0.1.0"
 description = "Automation tools for Autodesk Fusion Electronics, driven over Fusion's local HTTP bridge"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["requests", "numpy"]
 

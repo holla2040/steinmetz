@@ -13,8 +13,8 @@ PY ?= .venv/bin/python
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sort | sed -E 's/:.*## /\t/'
 
-setup:           ## Create .venv and install the package (editable)
-	python3 -m venv .venv && .venv/bin/pip install -e .
+setup:           ## Create .venv (current pip/setuptools) and install the package (editable)
+	python3 -m venv --upgrade-deps .venv && .venv/bin/pip install -e .
 
 read:            ## Connect + summarize the open design
 	$(PY) examples/read_design.py
