@@ -14,7 +14,7 @@ help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sort | sed -E 's/:.*## /\t/'
 
 setup:           ## Create .venv and install the package (editable)
-	python -m venv .venv && .venv/bin/pip install -e .
+	python3 -m venv .venv && .venv/bin/pip install -e .
 
 read:            ## Connect + summarize the open design
 	$(PY) examples/read_design.py
