@@ -94,7 +94,11 @@ class FusionBridge:
         return self._id
 
     def _headers(self) -> dict[str, str]:
-        h = {"Content-Type": "application/json", "Accept": _ACCEPT}
+        # Fusion's MCP server validates the Host header (DNS-rebinding
+        # protection) and 403s anything but localhost. Through the WSL
+        # port-forward we connect to the gateway IP, so spoof a loopback Host.
+        h = {"Content-Type": "application/json", "Accept": _ACCEPT,
+             "Host": f"127.0.0.1:{self.port}"}
         if self._sid:
             h["MCP-Session-Id"] = self._sid
         return h

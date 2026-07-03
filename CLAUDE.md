@@ -129,6 +129,8 @@ read/write, only `bridge.py`'s write layer changes — tools on top are unaffect
 - **The bridge rules are load-bearing — don't "simplify" them away.** Each was
   learned the hard way and is documented inline in `bridge.py`/`scr.py` and in
   `docs/fusion-bridge.md`: hit the gateway IP (WSL2 can't reach loopback);
+  send a loopback `Host` header (Fusion's MCP server 403s "Invalid Host header"
+  on anything but localhost);
   capture `MCP-Session-Id` from the *initialize response header* and resend it;
   send `notifications/initialized` before any `tools/call`; reads silently cap at
   100 rows so always paginate (`electronics_read` does); every EAGLE command must

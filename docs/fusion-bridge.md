@@ -34,13 +34,18 @@ way — skip one and you get a confusing error.
 ## The handshake (each rule bites if skipped)
 
 1. **Hit the gateway IP, not `127.0.0.1`** — loopback is unreachable from WSL2.
-2. **`initialize` once**, and capture **`MCP-Session-Id` from the *response
+2. **Send a loopback `Host` header** (`Host: 127.0.0.1:27182`). Fusion's MCP
+   server validates the Host header (DNS-rebinding protection) and returns
+   `403 {"error": "Invalid Host header"}` for anything but localhost — which is
+   exactly what you send by default when hitting the gateway IP. `bridge.py`
+   spoofs it on every request.
+3. **`initialize` once**, and capture **`MCP-Session-Id` from the *response
    header***. Resend it on every later request. Omit it → `Missing MCP-Session-Id
    header`.
-3. **Send `notifications/initialized` before any `tools/call`.** Otherwise →
+4. **Send `notifications/initialized` before any `tools/call`.** Otherwise →
    `Session not initialized`.
-4. Send `Accept: application/json, text/event-stream` on every request.
-5. A tool's rows come back as a **JSON string** in `result.content[0].text` →
+5. Send `Accept: application/json, text/event-stream` on every request.
+6. A tool's rows come back as a **JSON string** in `result.content[0].text` →
    parse that → `{ "items": [...], "pagination": {...} }`.
 
 ## Reading the design
