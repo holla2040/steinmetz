@@ -13,7 +13,7 @@ for the project ethos and `docs/fusion-bridge.md` for the protocol reference.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e .                  # installs the only dependency: requests
+pip install -e .                  # installs the dependencies: requests, numpy
 
 python examples/read_design.py    # connect + summarize the open design
 python examples/run_command.py    # prove the write path (harmless WINDOW FIT)
@@ -70,6 +70,17 @@ Three layers, each built on the one below, plus a `.scr` helper:
   `--only REF...` overrides it. Nothing selected → nothing placed. Methodology
   and before/after in `docs/PLACE.md`. The template every future tool follows:
   read → compute → write back → re-read to verify.
+- **`src/placevec.py` (`VecEngine`) — the placer's numpy engine.** The
+  optimization loops (per-part ring search, spread, settle, legalize, quench)
+  run here, batched over candidate blocks (batched Prim per net, vectorized
+  separating-axis legality, bound-pruned crossing counts, exact dirty-part
+  skipping). `Placer` keeps the scalar per-candidate scoring/legality methods
+  as the readable spec; the engine must agree with them — change semantics in
+  both places or not at all, and check with `make validate`
+  (`scripts/validate_placevec.py`, read-only against the live board). ~seconds
+  instead of minutes for a 23-part selection; even `--rotate 1` (360
+  orientations) is tractable. Methodology, engineering log, and results in
+  `docs/PLACE-VECTOR.md`.
 - **`src/scr.py` — `.scr` generation/validation.** Renders EAGLE command-line
   scripts with the safety rules baked in (terminate with `;`, reject control
   chars and double-quotes).

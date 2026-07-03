@@ -54,6 +54,7 @@ import time
 
 from board import Board, ContactBox, read_board
 from bridge import FusionBridge
+from placevec import VecEngine
 from selection import read_selection
 
 # Nets excluded from the airwire objective by default (plane-routed power).
@@ -311,6 +312,12 @@ class Placer:
         self.mirrored = {eid for eid, e in board.elements.items() if e.mirror}
         # per-part net cache: eid -> [(sid, own_pad_offsets, other_pads)]
         self._enets_cache: dict[int, list] = {}
+        self._vec: VecEngine | None = None      # built on first place/improve
+
+    def _engine(self) -> VecEngine:
+        if self._vec is None:
+            self._vec = VecEngine(self)
+        return self._vec
 
     # ----- airwire scoring -------------------------------------------------
 
@@ -674,97 +681,6 @@ class Placer:
             return (-self._pins(eid), d, self.b.elements[eid].name)
         return sorted(self.movable, key=key)
 
-    def _optimal_region(self, eid, centers, rotations, placed,
-                        pos_step, angle_step, span, max_disp,
-                        progress: Progress | None = None):
-        """The (rotation-delta, centre) minimizing eid's own airwire, legal
-        against ``placed``. Sweeps rotations; per rotation runs an outward ring
-        from the implied-centre centroid, keeping the min-cost legal point and
-        stopping ``span`` mm past the first legal ring (cost grows with distance
-        from the ideal centre)."""
-        o0 = self.orig[eid]
-        cand_angles = [0.0] if eid in self.mirrored else self._angle_steps(angle_step)
-        if not self._eid_nets(eid):                       # nothing to pull it
-            c0 = self._snap(o0)
-            if self._fits(eid, c0, placed, {**rotations, eid: 0.0}):
-                return 0.0, c0
-            return self._nearest_legal(eid, o0, placed, rotations, angle_step, max_disp)
-        bx0, by0, bx1, by1 = self.b.outline
-        diag = math.hypot(bx1 - bx0, by1 - by0)
-        r_cap = min(diag, max_disp) if max_disp is not None else diag
-        best = None                                       # (cost, angle, centre)
-        for a in cand_angles:
-            if progress:
-                progress.tick(f"searching {self.b.elements[eid].name} at R{a:g}")
-            implied = self._implied_centers(eid, a, centers, rotations)
-            if not implied:
-                continue
-            ox = sum(p[0] for p in implied) / len(implied)
-            oy = sum(p[1] for p in implied) / len(implied)
-            rot_trial = dict(rotations)
-            rot_trial[eid] = a
-            r_first = None
-            r = 0.0
-            while True:
-                if r == 0.0:
-                    ring = [(ox, oy)]
-                else:
-                    k = max(8, math.ceil(2 * math.pi * r / pos_step))
-                    ring = [(ox + r * math.cos(2 * math.pi * t / k),
-                             oy + r * math.sin(2 * math.pi * t / k))
-                            for t in range(k)]
-                seen = set()
-                for c in ring:
-                    c = self._snap(c)
-                    if c in seen:
-                        continue
-                    seen.add(c)
-                    if max_disp is not None and \
-                            math.hypot(c[0] - o0[0], c[1] - o0[1]) > max_disp + 1e-9:
-                        continue
-                    if not self._fits(eid, c, placed, rot_trial):
-                        continue
-                    cost = self._part_cost_at(eid, c, a, centers, rotations)
-                    if best is None or cost < best[0] - 1e-12:
-                        best = (cost, a, c)
-                    if r_first is None:
-                        r_first = r
-                if (r_first is not None and r > r_first + span) or r > r_cap:
-                    break
-                r += pos_step
-        if best is None:
-            return self._nearest_legal(eid, o0, placed, rotations, angle_step, max_disp)
-        return best[1], best[2]
-
-    def _nearest_legal(self, eid, origin, placed, rotations,
-                       angle_step, max_disp=None):
-        """Nearest legal (angle, centre) to ``origin`` ignoring airwire — the
-        grow-region safety net when the bounded search finds nothing (a=0 first)."""
-        cand_angles = [0.0] if eid in self.mirrored else self._angle_steps(angle_step)
-        bx0, by0, bx1, by1 = self.b.outline
-        diag = math.hypot(bx1 - bx0, by1 - by0)
-        r_cap = min(diag, max_disp) if max_disp is not None else diag
-        r = 0.0
-        while r <= r_cap:
-            if r == 0.0:
-                ring = [origin]
-            else:
-                k = max(8, math.ceil(2 * math.pi * r / 0.5))
-                ring = [(origin[0] + r * math.cos(2 * math.pi * t / k),
-                         origin[1] + r * math.sin(2 * math.pi * t / k))
-                        for t in range(k)]
-            seen = set()
-            for c in ring:
-                c = self._snap(c)
-                if c in seen:
-                    continue
-                seen.add(c)
-                for a in cand_angles:
-                    if self._fits(eid, c, placed, {**rotations, eid: a}):
-                        return a, c
-            r += 0.5
-        return 0.0, self._snap(origin)
-
     def place(self, pos_step: float = 0.5, angle_step: float = 90.0,
               span: float = 3.0, max_disp=None,
               progress: Progress | None = None):
@@ -780,145 +696,18 @@ class Placer:
            spread cost and resolving the contention a single greedy pass can't.
 
         Returns ``(centers, rotations)``.
+
+        The loops run in the vectorized numpy engine (``placevec.VecEngine``) —
+        same objective, same pipeline (seed -> spread -> settle -> legalize ->
+        settle -> legalize, with the hard legality guarantee Fusion's MOVE
+        needs), evaluated per candidate *block* instead of per candidate. The
+        scalar per-part scoring/legality methods on this class remain the
+        readable spec the engine is validated against.
         """
-        anchors = {e: self.orig[e] for e in self.anchors}
-        centers = dict(self.orig)
-        rotations = {e: 0.0 for e in self.movable}
-        order = self._placement_order()
-        if progress:
-            progress.log(f"seeding {len(order)} part(s)")
-        for i, eid in enumerate(order, 1):
-            if progress:
-                progress.tick(f"seeding {i}/{len(order)} {self.b.elements[eid].name}")
-            a, c = self._optimal_region(eid, centers, rotations, anchors,
-                                        pos_step, angle_step, span, max_disp,
-                                        progress)
-            rotations[eid] = a
-            centers[eid] = c
-        if progress:
-            progress.log("spreading overlaps")
-        centers = self._spread(centers, rotations)
-        centers, rotations = self._settle(centers, rotations, pos_step,
-                                          angle_step, max(span, 8.0), max_disp,
-                                          progress=progress)
-        # HARD legality: _spread can push a part into an anchor hard box, and
-        # _settle won't move an illegal part to a legal-but-longer spot — so force
-        # any overlapping part to its nearest legal spot, then re-settle. Fusion
-        # offsets a part whose MOVE target overlaps, so a legal output is what
-        # makes every part land.
-        centers, rotations = self._legalize(centers, rotations, angle_step,
-                                            progress=progress)
-        centers, rotations = self._settle(centers, rotations, pos_step,
-                                          angle_step, max(span, 8.0), max_disp,
-                                          progress=progress)
-        return self._legalize(centers, rotations, angle_step, progress=progress)
-
-    def _legalize(self, centers, rotations, angle_step, passes: int = 40,
-                  progress: Progress | None = None):
-        """Force every movable part that overlaps another part (or the board
-        edge) to its nearest legal spot, keeping rotation — a guaranteed
-        no-overlap output. Required for correctness: Fusion's ``MOVE`` offsets a
-        part that would land overlapping, so an illegal target fails the
-        pad-position gate."""
-        centers = dict(centers)
-        rotations = dict(rotations)
-        for p in range(passes):
-            if progress:
-                progress.tick(f"legalizing pass {p + 1}/{passes}")
-            moved = False
-            for eid in self._placement_order():
-                others = {e: c for e, c in centers.items() if e != eid}
-                if self._fits(eid, centers[eid], others, rotations):
-                    continue
-                a, c = self._nearest_legal(eid, centers[eid], others, rotations,
-                                           angle_step)
-                centers[eid] = c
-                rotations[eid] = a
-                moved = True
-            if not moved:
-                break
-        return centers, rotations
-
-    def _spread(self, centers, rotations, iters: int = 600):
-        """Remove hard-geometry overlaps by minimal-displacement AABB pushes.
-
-        Movable/movable pairs split the push. Recompute bboxes after each
-        accepted push; stale geometry makes dense clusters slosh. Anchor
-        conflicts are handled by the hard legalizer after this soft spread,
-        since pushing every near-anchor interaction here costs too much wire.
-        """
-        centers = dict(centers)
-        mv = self.movable
-        bx0, by0, bx1, by1 = self.b.outline
-        g = self.clearance
-        for _ in range(iters):
-            moved = False
-            for i in range(len(mv)):
-                for j in range(i + 1, len(mv)):
-                    bi = self._bbox(mv[i], centers[mv[i]], rotations)
-                    bj = self._bbox(mv[j], centers[mv[j]], rotations)
-                    cxi = (bi[0] + bi[2]) / 2
-                    cyi = (bi[1] + bi[3]) / 2
-                    cxj = (bj[0] + bj[2]) / 2
-                    cyj = (bj[1] + bj[3]) / 2
-                    ox = ((bi[2] - bi[0]) / 2 + (bj[2] - bj[0]) / 2 + g) - abs(cxi - cxj)
-                    oy = ((bi[3] - bi[1]) / 2 + (bj[3] - bj[1]) / 2 + g) - abs(cyi - cyj)
-                    if ox > 1e-6 and oy > 1e-6:                 # overlapping
-                        moved = True
-                        if ox <= oy:
-                            s = ox / 2 + 1e-9
-                            sign = 1.0 if cxi >= cxj else -1.0
-                            centers[mv[i]] = (centers[mv[i]][0] + sign * s, centers[mv[i]][1])
-                            centers[mv[j]] = (centers[mv[j]][0] - sign * s, centers[mv[j]][1])
-                        else:
-                            s = oy / 2 + 1e-9
-                            sign = 1.0 if cyi >= cyj else -1.0
-                            centers[mv[i]] = (centers[mv[i]][0], centers[mv[i]][1] + sign * s)
-                            centers[mv[j]] = (centers[mv[j]][0], centers[mv[j]][1] - sign * s)
-            for eid in mv:                                       # keep on board
-                bb = self._bbox(eid, centers[eid], rotations)
-                dx = dy = 0.0
-                if bb[0] < bx0 + self.margin:
-                    dx = (bx0 + self.margin) - bb[0]
-                elif bb[2] > bx1 - self.margin:
-                    dx = (bx1 - self.margin) - bb[2]
-                if bb[1] < by0 + self.margin:
-                    dy = (by0 + self.margin) - bb[1]
-                elif bb[3] > by1 - self.margin:
-                    dy = (by1 - self.margin) - bb[3]
-                if dx or dy:
-                    centers[eid] = (centers[eid][0] + dx, centers[eid][1] + dy)
-            if not moved:
-                break
-        return centers
-
-    def _settle(self, centers, rotations, pos_step, angle_step, span, max_disp,
-                passes: int = 25, progress: Progress | None = None):
-        """Coordinate descent: repeatedly re-place each movable part at its
-        optimal region against all the OTHER parts, keeping only strict airwire
-        improvements. Recovers the airwire the spread step cost and lets parts
-        settle into the packed arrangement. Monotone (airwire) and terminating."""
-        centers = dict(centers)
-        rotations = dict(rotations)
-        order = self._placement_order()
-        for p in range(passes):
-            if progress:
-                progress.tick(f"settling pass {p + 1}/{passes}")
-            moved = False
-            for eid in order:
-                others = {e: c for e, c in centers.items() if e != eid}
-                before = self._part_cost_at(eid, centers[eid], rotations[eid],
-                                            centers, rotations)
-                a, c = self._optimal_region(eid, centers, rotations, others,
-                                            pos_step, angle_step, span, max_disp,
-                                            progress)
-                if self._part_cost_at(eid, c, a, centers, rotations) < before - 1e-9:
-                    centers[eid] = c
-                    rotations[eid] = a
-                    moved = True
-            if not moved:
-                break
-        return centers, rotations
+        eng = self._engine()
+        centers, deltas = eng.place(pos_step, angle_step, span, max_disp,
+                                    progress)
+        return eng.to_dicts(centers, deltas)
 
     def improve(self, centers, rotations, *, nudge: float = 1.5,
                 pos_step: float = 0.5, angle_step: float = 90.0,
@@ -929,83 +718,20 @@ class Placer:
         same-footprint swap. Resolves the residual coupling the per-part seed
         can't see (two parts contending for one spot). Deterministic and
         terminating (strict improvement, fixed order). Returns ``(centers,
-        rotations)``."""
-        centers = dict(centers)
-        rotations = dict(rotations)
-        angles = self._angle_steps(angle_step)
-        order = self._placement_order()
-        k = int(round(nudge / pos_step))
-        offsets = [(ix * pos_step, iy * pos_step)
-                   for ix in range(-k, k + 1) for iy in range(-k, k + 1)]
-        if progress:
-            progress.log(f"quenching up to {passes} pass(es)")
-        for p in range(passes):
-            if progress:
-                progress.tick(f"quenching pass {p + 1}/{passes}")
-            changed = False
-            # nudge + rotate, one part at a time
-            for eid in order:
-                others = {e: c for e, c in centers.items() if e != eid}
-                cx, cy = centers[eid]
-                cur_a = rotations[eid]
-                cand_angles = [0.0] if eid in self.mirrored else angles
-                best = (self._global_cost(centers, rotations), cx, cy, cur_a)
-                seen = set()
-                for dx, dy in offsets:
-                    nc = self._snap((cx + dx, cy + dy))
-                    if nc in seen:
-                        continue
-                    seen.add(nc)
-                    if max_disp is not None and math.hypot(
-                            nc[0] - self.orig[eid][0], nc[1] - self.orig[eid][1]) > max_disp + 1e-9:
-                        continue
-                    for a in cand_angles:
-                        if abs(dx) < 1e-12 and abs(dy) < 1e-12 and a == cur_a:
-                            continue
-                        if not self._fits(eid, nc, others, {**rotations, eid: a}):
-                            continue
-                        centers[eid] = nc
-                        rotations[eid] = a
-                        cost = self._global_cost(centers, rotations)
-                        if cost < best[0] - 1e-9:
-                            best = (cost, nc[0], nc[1], a)
-                centers[eid] = (best[1], best[2])
-                rotations[eid] = best[3]
-                if (best[1], best[2], best[3]) != (cx, cy, cur_a):
-                    changed = True
-            # same-footprint swaps
-            if allow_swap:
-                for i in range(len(order)):
-                    ei = order[i]
-                    for j in range(i + 1, len(order)):
-                        ej = order[j]
-                        if self._fp_name(ei) is None or self._fp_name(ei) != self._fp_name(ej):
-                            continue
-                        base = self._global_cost(centers, rotations)
-                        ci, cj = centers[ei], centers[ej]
-                        ai, aj = rotations[ei], rotations[ej]
-                        best = (base, ci, cj, ai, aj)
-                        for nai, naj in ((ai, aj), (aj, ai)):
-                            centers[ei], centers[ej] = cj, ci
-                            rotations[ei], rotations[ej] = nai, naj
-                            oi = {e: c for e, c in centers.items() if e != ei}
-                            oj = {e: c for e, c in centers.items() if e != ej}
-                            if (self._fits(ei, centers[ei], oi, rotations)
-                                    and self._fits(ej, centers[ej], oj, rotations)):
-                                cost = self._global_cost(centers, rotations)
-                                if cost < best[0] - 1e-9:
-                                    best = (cost, centers[ei], centers[ej],
-                                            rotations[ei], rotations[ej])
-                        if best[0] < base - 1e-9:
-                            centers[ei], centers[ej] = best[1], best[2]
-                            rotations[ei], rotations[ej] = best[3], best[4]
-                            changed = True
-                        else:
-                            centers[ei], centers[ej] = ci, cj
-                            rotations[ei], rotations[ej] = ai, aj
-            if not changed:
-                break
-        return centers, rotations
+        rotations)``.
+
+        Runs in the vectorized engine: a candidate is compared on exactly the
+        global-cost terms its move can change (its own nets' airwire, the
+        crossings touching those nets' segments, the orientation terms of
+        net-sharing neighbors, its halo/edge terms) — the rest cancels out of
+        the strict-improvement test, so the accepted moves match the scalar
+        full-cost sweep at a fraction of the work.
+        """
+        eng = self._engine()
+        ca, da = eng.to_state(centers, rotations)
+        ca, da = eng.improve(ca, da, nudge, pos_step, angle_step, passes,
+                             allow_swap, max_disp, progress)
+        return eng.to_dicts(ca, da)
 
 
 def main():

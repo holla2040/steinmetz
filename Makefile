@@ -8,7 +8,7 @@
 # PY defaults to the project venv so targets work without activating it first.
 PY ?= .venv/bin/python
 
-.PHONY: help setup read run-command selection place screenshot
+.PHONY: help setup read run-command selection place screenshot validate
 
 help:            ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sort | sed -E 's/:.*## /\t/'
@@ -30,3 +30,6 @@ place:           ## Place the selected parts (ROT=DEG sets rotation step; writes
 
 screenshot:      ## Snapshot the board to C:\tmp (read at /mnt/c/tmp)
 	$(PY) src/screenshot.py
+
+validate:        ## Check the numpy placement engine against the scalar spec (read-only, live board)
+	$(PY) scripts/validate_placevec.py

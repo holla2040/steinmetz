@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Automation tools for Autodesk Fusion Electronics, driven over Fusion's local HTTP bridge"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["requests"]
+dependencies = ["requests", "numpy"]
 
 # Flat source layout: the modules live in src/ (steinmetz is only the project name).
 [tool.setuptools]

@@ -150,13 +150,13 @@ either.
 
    ```bash
    python -m venv .venv && source .venv/bin/activate
-   pip install -e .            # installs the `requests` dependency
+   pip install -e .            # installs the dependencies: `requests`, `numpy`
    python examples/read_design.py     # connect + summarize the open design
    python examples/run_command.py     # prove the write path (harmless WINDOW FIT)
    ```
 
    (No install needed to just run the examples — they put `src/` on the path
-   themselves; you only need `requests`.)
+   themselves; you only need `requests`, plus `numpy` for the placement tool.)
 
 `steinmetz` is the project/repo name; the source is plain modules under `src/`.
 

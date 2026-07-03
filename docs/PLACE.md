@@ -99,6 +99,38 @@ short **quench** (`improve`) then does a final nudge / rotate /
 same-footprint-swap polish on the full objective (airwire + crossings, plus the
 optional terms in §5).
 
+### 4b. The numpy engine — why it's fast
+
+The loops above run in `src/placevec.py` (`VecEngine`), which evaluates
+candidates in batches instead of one at a time — same objective, same
+pipeline, orders of magnitude fewer Python dispatches:
+
+- **Batched Prim.** A net has < 8 pads (≥ 8 pins is classified power and
+  ignored), so a whole block of candidate centres solves its MSTs together;
+  2- and 3-point nets use exact closed forms.
+- **Vectorized SAT.** Placement polygons are rectangles, so each pair has four
+  separating axes whose projections are affine in the candidate centre —
+  legality of a block against every placed part is a few array comparisons.
+  Rotation sweeps share one lockstep ring walk (each angle keeps its own
+  scalar stop rule), which is what makes `--rotate 1`'s 360 orientations
+  tractable.
+- **Cost-first pruning.** Candidates are scored first (cheap) and
+  legality-tested only if they could beat the best-so-far; the quench prunes
+  with the crossing-free cost as a lower bound and branch-and-bounds the
+  crossing term.
+- **Exact dirty-tracking.** A part is re-searched in settle/quench only when
+  something it can see moved (a net-mate, or a part whose old/new footprint
+  touches what its last search tested) — skipping a clean part reproduces the
+  scalar trajectory exactly.
+
+`Placer` keeps the scalar single-candidate methods (`_fits`, `_part_cost_at`,
+`_global_cost`, `mst_len`, `segments_cross`) as the readable spec of the
+objective; the engine is validated against them
+(`scripts/validate_placevec.py`, or `make validate`). On the reference
+23-resistor board, `--rotate 45` dropped from ~3.5 min of optimization to
+~3 s with equal airwire (385.8 vs 387.9 mm). Full methodology, the
+engineering log, and results: [PLACE-VECTOR.md](PLACE-VECTOR.md).
+
 ### 5. Rotation and optional spreading
 
 Rotation is **always on** and chosen **jointly with position** in step 4a:
