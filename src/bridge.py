@@ -13,12 +13,15 @@ Windows-side setup (once):
 
 * Fusion running with an Electronics document open.
 * Preferences ▸ General ▸ API ▸ "Fusion MCP Server" enabled.
-* A Windows port-forward from the WSL gateway IP to Fusion's loopback:27182,
-  bound to the **gateway IP, not 0.0.0.0** (see ``docs/fusion-bridge.md``).
+* NAT-mode WSL only: a Windows port-forward from the WSL gateway IP to Fusion's
+  loopback:27182, bound to the **gateway IP, not 0.0.0.0** (see
+  ``docs/fusion-bridge.md``). Mirrored-mode WSL shares the Windows loopback and
+  needs no forward — :func:`default_host` probes and picks the right one.
 
 Every non-obvious rule below was learned the hard way and is encoded here so
-callers don't rediscover it: hit the gateway IP (loopback is unreachable from
-WSL2), capture ``MCP-Session-Id`` from the *initialize response header* and
+callers don't rediscover it: hit a host that actually reaches Fusion (loopback
+under mirrored WSL; the gateway port-forward under NAT, where loopback is
+unreachable), capture ``MCP-Session-Id`` from the *initialize response header* and
 resend it, send ``notifications/initialized`` before any ``tools/call``,
 default reads to a 1000-row page (the server silently caps at 100), and wrap
 board edits in ``Electron.run`` with a trailing ``;`` (a bare ``MOVE`` leaves
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 from typing import Any
 
@@ -38,16 +42,31 @@ _ACCEPT = "application/json, text/event-stream"
 
 
 def default_gateway() -> str:
-    """Windows host IP as seen from WSL2 = the default-route gateway.
-
-    Loopback (127.0.0.1) is NOT reachable from WSL2; Fusion listens on the
-    Windows loopback, reached through the port-forward bound to this IP.
+    """Windows host IP as seen from WSL2 *in NAT mode* = the default-route
+    gateway. In mirrored mode the gateway is just the LAN router — see
+    :func:`default_host`, which picks correctly for both.
     """
     out = subprocess.run(["ip", "route"], capture_output=True, text=True).stdout
     for line in out.splitlines():
         if line.startswith("default"):
             return line.split()[2]
     raise RuntimeError("could not determine the default gateway (Windows host IP)")
+
+
+def default_host(port: int = DEFAULT_PORT) -> str:
+    """Pick the host that actually reaches Fusion, whatever the WSL mode.
+
+    Under WSL2 **NAT** networking loopback is unreachable and Fusion is reached
+    through a Windows port-forward on the default-route gateway; under
+    **mirrored** networking loopback is shared with Windows (and the gateway is
+    the LAN router, which can never work). A quick connect probe on loopback
+    distinguishes the two without asking which mode we're in.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return "127.0.0.1"
+    except OSError:
+        return default_gateway()
 
 
 class FusionError(RuntimeError):
@@ -59,8 +78,8 @@ class FusionBridge:
 
     def __init__(self, host: str | None = None, port: int = DEFAULT_PORT,
                  timeout: float = 60.0):
-        self.host = host or os.environ.get("STEINMETZ_FUSION_HOST") or default_gateway()
         self.port = int(os.environ.get("STEINMETZ_FUSION_PORT", port))
+        self.host = host or os.environ.get("STEINMETZ_FUSION_HOST") or default_host(self.port)
         self.url = f"http://{self.host}:{self.port}/mcp"
         self.timeout = timeout
         self._session = requests.Session()

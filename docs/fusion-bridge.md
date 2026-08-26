@@ -17,8 +17,13 @@ way — skip one and you get a confusing error.
 2. **Preferences ▸ General ▸ API ▸ "Fusion MCP Server"** enabled. (This Autodesk
    toggle is the only thing here called "MCP" — it just publishes the HTTP
    endpoint on `127.0.0.1:27182`.)
-3. From WSL2 you can't reach the Windows loopback, so forward Fusion's port to
-   the **WSL gateway IP** (the Windows host as seen from WSL):
+3. This step depends on the WSL networking mode (`wslinfo --networking-mode`):
+   - **mirrored** — nothing to do. WSL shares the Windows loopback, so
+     `127.0.0.1:27182` just works, and no portproxy rule should exist for the
+     port (a leftover `0.0.0.0` rule steals the bind from Fusion — see the
+     warning below).
+   - **NAT** — you can't reach the Windows loopback, so forward Fusion's port
+     to the **WSL gateway IP** (the Windows host as seen from WSL):
 
    ```powershell
    # GWIP = `ip route | grep default | awk '{print $3}'` from WSL, e.g. 172.17.64.1
@@ -26,14 +31,31 @@ way — skip one and you get a confusing error.
          connectaddress=127.0.0.1 connectport=27182
    ```
 
-   ⚠️ **Bind the gateway IP, never `0.0.0.0`.** A `0.0.0.0:27182` listener hijacks
-   the loopback Fusion's own server uses, so it "connects then closes
-   unexpectedly." Health check (on Windows): `curl http://127.0.0.1:27182/mcp`
-   should return `{"error":"Not Found"}` when healthy.
+   ⚠️ **Bind the gateway IP, never `0.0.0.0`.** A `0.0.0.0:27182` listener
+   covers loopback too, so it steals the bind from Fusion's own server (which
+   silently moves to a random port) and forwards to itself — connections hang
+   or "close unexpectedly." This bit for real on 2026-08-25 after a switch to
+   mirrored mode left a stale `0.0.0.0` rule behind. Health check (on
+   Windows): `curl http://127.0.0.1:27182/mcp` should return
+   `{"error":"Not Found"}` when healthy.
+
+### When the connection misbehaves
+
+Don't re-derive the diagnosis — run
+`~/claude-code-fusion-mcp-check/check.sh`
+(clone: `git@github.com:holla2040/claude-code-fusion-mcp-check.git`). It checks
+the link layer by layer (WSL→host route, Windows listener on 27182, portproxy,
+loop detection) and prints the exact fix for the broken layer. The failure modes
+are counterintuitive — e.g. the add-in silently rebinds to a random port when
+27182 is taken — and are already encoded there. Follow what it prints; don't
+apply ad-hoc netsh/proxy workarounds from this repo.
 
 ## The handshake (each rule bites if skipped)
 
-1. **Hit the gateway IP, not `127.0.0.1`** — loopback is unreachable from WSL2.
+1. **Hit a host that reaches Fusion.** Mirrored-mode WSL: `127.0.0.1` directly.
+   NAT-mode WSL: the gateway IP (loopback is unreachable). `bridge.default_host`
+   probes loopback first and falls back to the gateway, so both modes work
+   unconfigured.
 2. **Send a loopback `Host` header** (`Host: 127.0.0.1:27182`). Fusion's MCP
    server validates the Host header (DNS-rebinding protection) and returns
    `403 {"error": "Invalid Host header"}` for anything but localhost — which is

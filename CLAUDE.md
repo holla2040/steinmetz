@@ -34,12 +34,19 @@ tools are flag-driven, so to pass options call the script directly
   step). The `Makefile` only aliases the run commands — there's no `make test`
   or `pytest`; don't look for them.
 - **Nothing runs without a live Fusion session.** Every example and tool requires
-  a Windows-side Fusion with an Electronics document open, the "Fusion MCP Server"
-  preference enabled, and a `netsh` port-forward to the WSL gateway IP. Full
-  setup (including the critical `0.0.0.0` gotcha) is in `docs/fusion-bridge.md`.
-  If a tool can't connect, suspect this environment, not the Python.
+  a Windows-side Fusion with an Electronics document open and the "Fusion MCP
+  Server" preference enabled. NAT-mode WSL additionally needs a `netsh`
+  port-forward to the WSL gateway IP; mirrored-mode WSL shares the Windows
+  loopback and needs no forward. Full setup (including the critical `0.0.0.0`
+  gotcha) is in `docs/fusion-bridge.md`.
+  If a tool can't connect, suspect this environment, not the Python: run
+  `~/claude-code-fusion-mcp-check/check.sh`
+  ([holla2040/claude-code-fusion-mcp-check](git@github.com:holla2040/claude-code-fusion-mcp-check.git))
+  — it diagnoses the link layer by layer and prints the exact fix. Report what
+  it says; don't apply ad-hoc network fixes from this repo.
 - Host/port can be overridden with `STEINMETZ_FUSION_HOST` / `STEINMETZ_FUSION_PORT`;
-  otherwise the host is auto-detected as the WSL default-route gateway.
+  otherwise `bridge.default_host` probes loopback first (works in mirrored-mode
+  WSL) and falls back to the WSL default-route gateway (NAT mode).
 
 ## Architecture
 
