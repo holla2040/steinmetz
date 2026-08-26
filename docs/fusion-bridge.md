@@ -166,15 +166,26 @@ NETROUTE P 3 X1 2 X2 2 X3 2;                        # pin 2 of X1–X3
   support and verified live on 2026-08-26: the connection lands with no
   prompt. Both the separate-call gap and the hidden-dialog block below are
   under investigation at Autodesk.
-- ⚠️ Even with the same-string workaround, NETROUTE (like MOVE/WIRE/ADD)
-  leaves the execute channel gated afterward — `Cannot perform 'script' while
-  a command dialog is open` with **nothing visible in the Fusion UI** — until
-  someone presses Esc in the canvas. Two hard-won cautions: the Esc that
-  clears the block can **roll back a command that already reported success**
-  (an `ADD` vanished this way), and a re-run `ADD` can silently **drop its
-  explicit name argument** (`ADD R-1206@holla R99 …` came back auto-numbered
-  `R9`). So: batch writes into one script, verify every write out-of-band via
-  `electronics_read` (`PinRef`/`Element`), and re-verify after any Esc.
+- ⚠️ Even with the same-string workaround, NETROUTE (like MOVE/WIRE/ADD/
+  DELETE) leaves the execute channel gated afterward — `Cannot perform
+  'script' while a command dialog is open` — until someone clears it in
+  Fusion. Two distinct mechanisms (both verified 2026-08-26):
+  1. **A real error dialog rendered minimized** — look for a tiny **red X in
+     the bottom-right corner of the canvas**; clicking it opens the actual
+     error window, and clicking through it releases the gate.
+  2. **An armed-tool state after an error-free command** — nothing visible at
+     all; a click into the canvas plus **Esc** clears it.
+  Batch writes into one script and verify every write out-of-band via
+  `electronics_read` (`PinRef`/`Element`) — success messages alone prove
+  nothing about what landed.
+- ⚠️ **Quote element names in `ADD`.** An unquoted name token that looks like
+  a rotation is parsed as one: `ADD R-1206@holla R99 R0 (220 40)` reads `R99`
+  as *rotation 99°* → a "Non orthogonal orientations can only be used in a
+  board or footprint!" error (minimized, see above), the name is discarded,
+  and the part is auto-numbered (`R9`). Quoted works:
+  `ADD R-1206@holla 'R99' R0 (220 40)`. Beware the silent coincidence: if the
+  requested name happens to be the next free number, the part *appears*
+  correctly named and the bug goes unnoticed.
 - Pin *names* can be numeric strings (`1`, `2` on connectors/jumpers), so
   option `N` covers those too.
 
