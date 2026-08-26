@@ -157,17 +157,24 @@ NETROUTE P 3 X1 2 X2 2 X3 2;                        # pin 2 of X1–X3
 - Connecting a pin to a pin that is already on a named net joins the new pin to
   that net — so "attach D1's cathode to PANEL+" is just
   `NETROUTE N 2 D1 C Q9 D;` when Q9's drain is on PANEL+.
-- Run **`SET CONFIRM YES;`** first so confirmation prompts don't open dialogs
-  and block the execute channel (see the ⚠️ above — a blocked dialog can only be
-  cleared by pressing Esc in Fusion).
-- ⚠️ **Known gap (likely bug, as of 2026-08-25):** when the routed wire touches
-  an existing named net, Fusion still pops a modal — *"Merge net segment 'N$nn'
-  into net '<NAME>'?"* — that `SET CONFIRM YES` does **not** auto-answer. The
-  execute channel reports `Cannot perform 'script' while a command dialog is
-  open` until a human clicks **Yes** in Fusion. Batch all NETROUTEs in one
-  `execute` script (in-script commands still dispatch), then have the user
-  clear the merge prompts once at the end. Verify the merges landed by
-  re-reading `electronics.PinRef` — the connection is applied once confirmed.
+- **Put `SET CONFIRM YES;` in the *same* `Electron.run` string as the
+  NETROUTE** — `Electron.run "SET CONFIRM YES;NETROUTE N 2 D1 C Q9 D;"`. A
+  separate `SET CONFIRM YES;` call does **not** suppress the *"Merge net
+  segment 'N$nn' into net '<NAME>'?"* modal that appears when the routed wire
+  touches an existing named net (each NETROUTE then queues one, and a human
+  must click Yes on each). The same-string form was suggested by Autodesk
+  support and verified live on 2026-08-26: the connection lands with no
+  prompt. Both the separate-call gap and the hidden-dialog block below are
+  under investigation at Autodesk.
+- ⚠️ Even with the same-string workaround, NETROUTE (like MOVE/WIRE/ADD)
+  leaves the execute channel gated afterward — `Cannot perform 'script' while
+  a command dialog is open` with **nothing visible in the Fusion UI** — until
+  someone presses Esc in the canvas. Two hard-won cautions: the Esc that
+  clears the block can **roll back a command that already reported success**
+  (an `ADD` vanished this way), and a re-run `ADD` can silently **drop its
+  explicit name argument** (`ADD R-1206@holla R99 …` came back auto-numbered
+  `R9`). So: batch writes into one script, verify every write out-of-band via
+  `electronics_read` (`PinRef`/`Element`), and re-verify after any Esc.
 - Pin *names* can be numeric strings (`1`, `2` on connectors/jumpers), so
   option `N` covers those too.
 
