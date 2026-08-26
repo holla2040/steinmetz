@@ -160,12 +160,19 @@ NETROUTE P 3 X1 2 X2 2 X3 2;                        # pin 2 of X1–X3
 - **Put `SET CONFIRM YES;` in the *same* `Electron.run` string as the
   NETROUTE** — `Electron.run "SET CONFIRM YES;NETROUTE N 2 D1 C Q9 D;"`. A
   separate `SET CONFIRM YES;` call does **not** suppress the *"Merge net
-  segment 'N$nn' into net '<NAME>'?"* modal that appears when the routed wire
-  touches an existing named net (each NETROUTE then queues one, and a human
-  must click Yes on each). The same-string form was suggested by Autodesk
-  support and verified live on 2026-08-26: the connection lands with no
-  prompt. Both the separate-call gap and the hidden-dialog block below are
-  under investigation at Autodesk.
+  segment 'N$nn' into net '<NAME>'?"* modal (each NETROUTE then queues one,
+  and a human must click Yes on each). The same-string form came from
+  Autodesk support and was A/B-verified on 2026-08-26: on the identical
+  merge, in the same session, the bare NETROUTE prompted and the same-string
+  form ran silent with the merge applied. Both the separate-call gap and the
+  hidden-dialog block below are under investigation at Autodesk.
+- **The merge modal only fires on a true merge.** Routing a *virgin* pin to a
+  pin on a named net attaches it directly — no anonymous segment exists, so
+  no prompt, with or without `SET CONFIRM`. The prompt appears only when an
+  existing segment (e.g. two previously-wired virgin pins on an auto-named
+  `N$nn`) must merge into another net. Don't "verify" confirm behavior with
+  2-pin virgin→named routes — they can't prompt, and the silence proves
+  nothing.
 - ⚠️ Even with the same-string workaround, NETROUTE (like MOVE/WIRE/ADD/
   DELETE) leaves the execute channel gated afterward — `Cannot perform
   'script' while a command dialog is open` — until someone clears it in
