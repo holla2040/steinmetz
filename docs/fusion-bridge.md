@@ -136,6 +136,66 @@ def run(_context):
 Commands that work this way include `MOVE`, `ROTATE`, `VALUE`, `CHANGE PACKAGE`,
 `ATTRIBUTE`, `EXPORT`, and `script <file>`.
 
+### Schematic auto-routing — `NETROUTE` (Insider builds)
+
+Recent Insider builds add `NETROUTE`, a schematic **auto-router by pin
+reference** — no more computing wire coordinates to connect pins. Run it from
+the schematic command line or through `Electron.run` like any other command.
+
+```
+NETROUTE N <num_pins> <ref1> <pin_name1> <ref2> <pin_name2> ... ;   (by pin name)
+NETROUTE P <num_pins> <ref1> <pin_num1>  <ref2> <pin_num2>  ... ;   (by pin number)
+```
+
+Examples:
+
+```
+NETROUTE N 5 U1 GND U2 GND U3 GND U4 GND U5 GND;   # five GND pins, U1–U5
+NETROUTE P 3 X1 2 X2 2 X3 2;                        # pin 2 of X1–X3
+```
+
+- Connecting a pin to a pin that is already on a named net joins the new pin to
+  that net — so "attach D1's cathode to PANEL+" is just
+  `NETROUTE N 2 D1 C Q9 D;` when Q9's drain is on PANEL+.
+- Run **`SET CONFIRM YES;`** first so confirmation prompts don't open dialogs
+  and block the execute channel (see the ⚠️ above — a blocked dialog can only be
+  cleared by pressing Esc in Fusion).
+- ⚠️ **Known gap (likely bug, as of 2026-08-25):** when the routed wire touches
+  an existing named net, Fusion still pops a modal — *"Merge net segment 'N$nn'
+  into net '<NAME>'?"* — that `SET CONFIRM YES` does **not** auto-answer. The
+  execute channel reports `Cannot perform 'script' while a command dialog is
+  open` until a human clicks **Yes** in Fusion. Batch all NETROUTEs in one
+  `execute` script (in-script commands still dispatch), then have the user
+  clear the merge prompts once at the end. Verify the merges landed by
+  re-reading `electronics.PinRef` — the connection is applied once confirmed.
+- Pin *names* can be numeric strings (`1`, `2` on connectors/jumpers), so
+  option `N` covers those too.
+
+### Switching document tabs (schematic ↔ board)
+
+Every `fusion_mcp_electronics_read` (and the reads behind `bridge.py`) queries
+the **active document tab** only. An Electronics design keeps several tabs open
+at once (`EcadDesignDocument`, `SchematicDocument`, `BoardDocument`, plus the 3D
+`FusionDocument`), and reading schematic entities (Instance, Net, PinRef, Part)
+with the board tab active — or board entities (Element, Signal, Smd) with the
+schematic active — returns **empty items, not an error**. Activate the right
+tab first with an `execute` script:
+
+```python
+import adsk.core
+def run(_context):
+    app = adsk.core.Application.get()
+    for i in range(app.documents.count):
+        d = app.documents.item(i)
+        if 'SchematicDocument' in str(d.objectType):  # or 'BoardDocument'
+            d.activate()
+            break
+```
+
+`Electron.run` commands likewise land in whichever editor is active, so switch
+tabs before firing schematic vs. board commands. Screenshots and ULP runs also
+follow the active tab.
+
 ## Temporary ULP probes
 
 Some Electronics state is only available through the embedded EAGLE runtime. The

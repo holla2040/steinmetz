@@ -144,6 +144,20 @@ read/write, only `bridge.py`'s write layer changes — tools on top are unaffect
   end with `;` (a bare `MOVE` leaves its tool active and blocks the whole execute
   channel until someone presses Esc in Fusion); no double-quotes in EAGLE
   commands (they break the `Electron.run "…"` wrapper — EAGLE uses single quotes).
+- **Reads and commands follow the active document tab.** Schematic entities need
+  the Schematic tab active, board entities the Board tab; the wrong tab returns
+  empty items, not an error. Switch programmatically with `Document.activate()`
+  via `execute`, and switch before firing editor-specific EAGLE commands. See
+  "Switching document tabs" in `docs/fusion-bridge.md`.
+- **Schematic auto-routing: `NETROUTE` (Insider builds).** Connect pins by
+  ref+pin name (`NETROUTE N 2 D1 C Q9 D;`) instead of drawing coordinate `NET`
+  wires; run `SET CONFIRM YES;` first so prompts don't block the channel.
+  Syntax and examples in `docs/fusion-bridge.md`.
+- **Layout review reference: `~/ThomsonLint`.** A hardware-design-review
+  knowledge base (hot loops, decoupling, snubbers, grounding) plus EAGLE ULP
+  exporters (`tools/fusion-electronics-*.ulp`) that dump full schematic/board
+  connectivity JSON and high-res images — run them via the bridge from the
+  matching editor tab (copy to `C:\tmp`, output lands in `<ulp-dir>/../exports`).
 - **Writes are unsaved.** Changes apply to the live design but are not persisted
   until the user saves in Fusion; reopening reverts them. `Electron.run` returns
   no echo, so verify out-of-band by re-reading.
