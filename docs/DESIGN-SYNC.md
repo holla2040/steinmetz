@@ -126,6 +126,12 @@ The tool is a **three-way change propagator**, not a full replicator. The
 baseline is what lets "changed in A since the fork" be separated from "always
 different in B because it's B."
 
+**Rule: snapshot A *before* duplicating it, from its saved state.** The
+baseline must be the exact state B and C were copied from. A snapshot taken
+after the duplication is already stale if A was touched in between, and a
+snapshot of unsaved edits doesn't match what the copies contain. Sequence:
+owner saves A → `sync snapshot A` → commit the baseline → owner duplicates.
+
 ## 6. Scope: what is synced, per design
 
 A per-target config (`sync/<design>.json`, one for B and one for C):
@@ -179,7 +185,7 @@ design must be open (they are, by default).
 | part added | `ADD <device>@<lib> 'REF' R<rot> (x y);` — **quote the name** (`docs/fusion-bridge.md`: an unquoted `R99` parses as rotation 99°). Resolve device/library names from `DeviceSet`/`Device`/`Library` reads by object id. Same libraries exist in B/C because they're copies. |
 | part removed | `DELETE (x y);` at the instance origin (name-based `DELETE REF` is unverified — check it; fall back to coordinates). Deleting also removes the board element. |
 | value changed | `VALUE 'REF' '<val>';` |
-| package/device variant changed | `CHANGE PACKAGE 'REF' '<pkg>';` (a.k.a. `PACKAGE`) — verify syntax on this build before relying on it. |
+| package/device variant changed | `CHANGE PACKAGE 'REF' '<pkg>';` (a.k.a. `PACKAGE`) — syntax unverified on this build; spike it in build step 0. Note this covers *gate-driver* footprint changes only (e.g. a cap moving 0603→0805). The MOSFET package swap is the owner's manual step at fork time and the MOSFETs are out of scope, so this command is not on the critical path. |
 | attribute changed | `ATTRIBUTE 'REF' '<NAME>' '<value>';` |
 | instance moved / rotated / mirrored | `MOVE 'REF' (x y);` `ROTATE =R<deg> 'REF';` `MIRROR 'REF';` |
 | pin joined a net | `SET CONFIRM YES;NETROUTE N 2 REF PIN REF2 PIN2;` in the **same** `Electron.run` string (merge-prompt workaround; see bridge doc). For boundary nets, REF2/PIN2 come from the pin map. |
@@ -199,10 +205,11 @@ design must be open (they are, by default).
 | polygon changed | `POLYGON '<SIG>' <width> (pts…);` then `RATSNEST;` to pour. |
 | text / silkscreen | `TEXT '<str>' R<rot> (x y);` on the right `LAYER`. Low priority. |
 
-Expect to *discover* syntax quirks for `WIRE '<SIG>'`, `VIA`, `GROUP`+`(> x y)`
-on this build the same way `ADD` and `NETROUTE` quirks were discovered:
-one command at a time, re-read after each, and record every finding in
-`docs/fusion-bridge.md`.
+Expect to *discover* syntax quirks for `WIRE '<SIG>'`, `VIA`, `GROUP`+`(> x y)`,
+`CHANGE PACKAGE`, `DELETE`, and `NAME` on this build the same way `ADD` and
+`NETROUTE` quirks were discovered: one command at a time, re-read after each,
+and record every finding in `docs/fusion-bridge.md`. These spikes are build
+step 0 (§10) — do them before any `apply` logic is written around them.
 
 ## 8. Verification (non-negotiable, per the repo's contract)
 
@@ -232,6 +239,13 @@ Success messages from `Electron.run` prove nothing — it returns `''` always.
   owner to press Esc between batches, and design `apply` to be **resumable**
   (idempotent commands, progress checkpoint). Full write-up:
   `docs/fusion-mcp-blocking-dialog-bug-report.md`.
+  The known mitigation is `SET CONFIRM YES;` **in the same `Electron.run`
+  string** as the command — verified for `NETROUTE`'s net-merge prompt (bridge
+  doc). It only suppresses *confirmation* prompts; it does nothing for the
+  minimized-error-dialog and armed-tool blocks, which is what `ADD` has
+  produced so far. Whether `ADD` and `DELETE` raise confirmation prompts of
+  their own on this build (e.g. deleting a part with connected nets) is
+  untested — test the same-string form with both in step 0 and record it.
 - **Errors are invisible over the bridge** (`EXPORT SCRIPT` proved it again).
   A `.scr` stops at its first failing command with no signal. Verify after
   every batch, and keep batches small enough that a failure is locatable.
@@ -239,8 +253,9 @@ Success messages from `Electron.run` prove nothing — it returns `''` always.
   the right document first, and `apply` must activate the *target's* schematic
   vs board before each batch. With two designs open there are eight documents
   named similarly — select by `dataFile.id`, never by name.
-- **Coordinates:** set `GRID MM;` before writing; reads report
-  `coordinate_unit`. Snapshot in mm always.
+- **Coordinates:** reads report their unit in `coordinate_unit` (mm on this
+  design); writes use whatever grid unit is active, so every `.scr` starts
+  with `GRID MM;` and every snapshot stores millimeters, full stop. Never mix.
 - **Writes are unsaved** until the owner saves in Fusion. That is the rollback:
   close without saving. Never call `save` from the tool.
 - **`N$` auto-names** drift. Fingerprint nets (§6).
@@ -270,6 +285,11 @@ docs/DESIGN-SYNC.md   this file; append an engineering log like docs/PLACE.md's
 
 Build order, each step verifiable on its own:
 
+0. **Command-syntax spikes** on a throwaway copy of the combo design (owner
+   makes it): `CHANGE PACKAGE`, `DELETE` by coordinate (and by name, if it
+   works), `NAME`, `WIRE '<SIG>'`, `VIA`, `GROUP` + `(> x y)` rip-up, and
+   `SET CONFIRM YES;` same-string with `ADD` and `DELETE`. One command per
+   `execute`, re-read after each, findings into `docs/fusion-bridge.md`.
 1. **`snapshot`** — read-only. Can be built and tested **today** against the
    combo design; nothing to write. Includes the document-activation dance and
    the resolution of object ids to names (device, library, pin, package).
