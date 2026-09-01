@@ -117,6 +117,14 @@ Future tools (swaps, inventory checks, exports) should be new modules under
 `src/` that take a `FusionBridge` / `Board` and follow the same loop. Anything
 selection-aware reuses `selection.read_selection`.
 
+**Planned: design sync (`feature/design-sync`).** Propagate gate-driver edits
+from a master design (A) into two copies (B, C) that differ only in MOSFET
+package: snapshot → diff against a committed baseline → apply schematic then
+board deltas → verify. Intent, live-verified spike results (`EXPORT SCRIPT` is
+library-only and fails invisibly over the bridge; `EXPORT NETSCRIPT` works;
+document activation works), scope rules, command mapping, and build order are
+in `docs/DESIGN-SYNC.md`. Read it before starting that work.
+
 ### The write path is a deliberate workaround
 
 As of 2026-06-30 the Fusion Electronics **object API is read-only**. Steinmetz

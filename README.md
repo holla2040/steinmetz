@@ -117,6 +117,7 @@ flowchart LR
 | `scripts/evaluate_place.py` | Read-only placement evaluator for live-board experiments; computes the candidate and overlap report without writing `MOVE`/`ROTATE` commands. |
 | `scripts/validate_placevec.py` | Read-only spec check (`make validate`): asserts the numpy engine agrees with `Placer`'s scalar methods on randomized states of the live board. |
 | `docs/fusion-bridge.md` | The verified handshake + write-path recipe and the gotchas behind every rule. |
+| `docs/DESIGN-SYNC.md` | **Planned tool:** propagate gate-driver changes from a master design into package-variant copies (snapshot → diff → apply → verify). Intent, spike results, scope rules, build order. |
 | `examples/` | `read_design.py` (read + summarize), `run_command.py` (prove the write path). |
 
 ```python
