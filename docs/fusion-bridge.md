@@ -136,6 +136,51 @@ def run(_context):
 Commands that work this way include `MOVE`, `ROTATE`, `VALUE`, `CHANGE PACKAGE`,
 `ATTRIBUTE`, `EXPORT`, and `script <file>`.
 
+### The command API (Insider builds)
+
+Fusion Insider 2707.0.73 adds a preview API that replaces `Electron.run` for
+batches: `Board` / `Schematic` / `Library` (all `adsk.electron.EcadDrawing`)
+have `createCommandInput()` and `executeCommands(input)`.
+
+```python
+import adsk.core, adsk.electron
+def run(_context):
+    drawing = adsk.electron.EcadDrawing.cast(adsk.core.Application.get().activeProduct)
+    ci = drawing.createCommandInput()
+    ci.stopOnError = False          # True: later commands come back NotExecuted
+    ci.rollbackOnError = False      # True: a failure discards the whole batch
+    ci.add("GRID MM;")
+    ci.add("MOVE R13 (11mm -7.8575mm);")
+    r = drawing.executeCommands(ci)
+    for x in r.commandResults:
+        print(x.command, x.status, [m.text for m in x.messages])
+```
+
+- **Per-command results.** `status` is `EcadCommandStatuses`: 0 succeeded,
+  1 succeeded with warning, 2 failed, 3 not executed. Messages carry the
+  interpreter's text (`Unknown command: …`, the live-DRC refusal, net-merge
+  notices). The batch result also has `success` and `rolledBack`.
+- **Same syntax as `.scr`**; a trailing `;` is accepted. Coordinates take unit
+  suffixes (`mm`, `mil`). Relative forms (`(R x y)`, `(>x y)`, `(+x y)`) are
+  treated as **absolute** — compute absolute targets.
+- **Still true:** board `MOVE`s fail with 'Switch to "Ignore Violator"' while
+  live DRC is on; commands that want more input (`BUS`, `POLYGON`, some `NET`
+  forms) can open a dialog and latch the execute channel exactly like
+  `Electron.run` does.
+- **Setters.** Most objects are now writable directly: `Element.x/y/angle/
+  locked`, `Part.value`, `Instance.angle`, `Net.name`, `Bus.name` (base name
+  must not end in a digit), `Junction.x`, `Grid.distance`, `Layer.color`
+  (ARGB hex string, e.g. `'0xccff00ff'`) / `visible`, `Text.value`,
+  `Circle.radius` (not on circles locked inside a placed package), `PolyPour.
+  isolate/width/rank`, and library `Package`/`Symbol`/`Pin`/`Contact` fields.
+- **In the bridge:** `has_command_api()` probes once; `execute_commands()` is
+  the raw batch; `run_eagle_batch()` uses it when present (`stop_on_error=False`,
+  so semantics match `Electron.run`) and returns the results under
+  `"commands"`; `check=True` raises on any failed command.
+  `STEINMETZ_LEGACY_WRITE=1` forces `Electron.run`.
+- **Preview API** ("may change in future releases"). Production builds without
+  it keep working through the `Electron.run` fallback.
+
 ### Schematic auto-routing — `NETROUTE` (Insider builds)
 
 Recent Insider builds add `NETROUTE`, a schematic **auto-router by pin

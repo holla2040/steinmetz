@@ -6,8 +6,11 @@ client library, no plugin. Two capabilities:
 * **read**  — :meth:`FusionBridge.electronics_read` walks the board/schematic
   object model (``electronics.Element``, ``.Smd``, ``.Signal``, ``.Package`` …).
 * **write** — :meth:`FusionBridge.execute` runs Python inside Fusion;
-  :meth:`run_eagle` / :meth:`run_scr` drive the EAGLE command interpreter via
-  ``Electron.run`` (the object API is read-only, the command line is not).
+  :meth:`run_eagle` / :meth:`run_scr` drive the EAGLE command interpreter.
+  On builds whose ``adsk.electron`` has ``EcadDrawing.executeCommands`` (Fusion
+  Insider 2707.0.73, preview API) :meth:`run_eagle_batch` goes through
+  :meth:`execute_commands`, which returns a status and messages per command;
+  older builds fall back to ``Electron.run`` (no echo).
 
 Windows-side setup (once):
 
@@ -39,6 +42,34 @@ import requests
 
 DEFAULT_PORT = 27182
 _ACCEPT = "application/json, text/event-stream"
+
+# EcadCommandStatuses values (adsk.electron, preview API).
+CMD_SUCCEEDED, CMD_SUCCEEDED_WITH_WARNING, CMD_FAILED, CMD_NOT_EXECUTED = 0, 1, 2, 3
+
+# Fusion-side script for execute_commands. Runs the batch against the active
+# Electronics editor (Board, Schematic or Library — all are EcadDrawings) and
+# prints the batch result as one JSON line between markers.
+_COMMANDS_SCRIPT = '''import adsk.core, adsk.electron, json
+def run(_context):
+    app = adsk.core.Application.get()
+    product = app.activeProduct
+    drawing = adsk.electron.EcadDrawing.cast(product)
+    if not drawing:
+        raise RuntimeError("active product is %s, not a board/schematic/library editor"
+                           % (product.objectType if product else None))
+    ci = drawing.createCommandInput()
+    ci.stopOnError = __STOP__
+    ci.rollbackOnError = __ROLLBACK__
+    for c in __COMMANDS__:
+        ci.add(c)
+    r = drawing.executeCommands(ci)
+    out = {"success": r.success, "rolledBack": r.rolledBack,
+           "drawing": product.objectType,
+           "results": [{"command": x.command, "status": x.status,
+                        "messages": [m.text for m in x.messages]}
+                       for x in r.commandResults]}
+    print("__CMD_START__" + json.dumps(out) + "__CMD_END__")
+'''
 
 
 def default_gateway() -> str:
@@ -85,6 +116,7 @@ class FusionBridge:
         self._session = requests.Session()
         self._sid: str | None = None
         self._id = 0
+        self._command_api: bool | None = None
 
     # ----- handshake -------------------------------------------------------
 
@@ -212,12 +244,65 @@ class FusionBridge:
             raise FusionError(payload.get("error") or payload.get("message") or payload)
         return payload
 
-    def run_eagle(self, command: str, grid: str | None = None) -> dict:
-        """Fire one EAGLE command through the electronics interpreter."""
-        return self.run_eagle_batch([command], grid=grid)
+    def has_command_api(self) -> bool:
+        """True when this Fusion build has ``EcadDrawing.executeCommands``.
 
-    def run_eagle_batch(self, commands: list[str], grid: str | None = None) -> dict:
-        """Fire several EAGLE commands in order via ``Electron.run``.
+        Probed once per bridge. Set ``STEINMETZ_LEGACY_WRITE=1`` to force the
+        ``Electron.run`` path even when the API is there.
+        """
+        if os.environ.get("STEINMETZ_LEGACY_WRITE") == "1":
+            return False
+        if self._command_api is None:
+            msg = self.execute(
+                "import adsk.electron\n"
+                "def run(_context):\n"
+                "    print('__API__', hasattr(adsk.electron, 'EcadCommandInput'))\n"
+            ).get("message", "") or ""
+            self._command_api = "__API__ True" in msg
+        return self._command_api
+
+    def execute_commands(self, commands: list[str], stop_on_error: bool = True,
+                         rollback_on_error: bool = False) -> dict:
+        """Run EAGLE commands as one batch through ``EcadDrawing.executeCommands``.
+
+        Targets the active Electronics editor. Returns ``{"success", "rolledBack",
+        "drawing", "results": [{"command", "status", "messages"}]}`` where
+        ``status`` is one of the ``CMD_*`` constants. Commands use EAGLE script
+        syntax; a trailing ``;`` is accepted. Preview API — needs a build where
+        :meth:`has_command_api` is true.
+
+        Verified live (Insider 2707.0.73): NET / NAME / MOVE in a schematic and
+        RIPUP / ROUTE on a board run non-interactively; ``rollback_on_error``
+        undoes earlier successful commands in the batch. Still true here: board
+        MOVEs fail with 'Switch to "Ignore Violator"' while live DRC is on, and
+        commands that need more input (``BUS``, ``POLYGON``, some ``NET`` forms)
+        can open a dialog that blocks the execute channel until Esc in Fusion.
+        """
+        script = (_COMMANDS_SCRIPT
+                  .replace("__STOP__", repr(bool(stop_on_error)))
+                  .replace("__ROLLBACK__", repr(bool(rollback_on_error)))
+                  .replace("__COMMANDS__", repr([c.strip() for c in commands])))
+        msg = self.execute(script).get("message", "") or ""
+        if "__CMD_START__" not in msg or "__CMD_END__" not in msg:
+            raise FusionError(f"executeCommands produced no parseable result: {msg!r}")
+        return json.loads(msg.split("__CMD_START__", 1)[1].split("__CMD_END__", 1)[0])
+
+    def run_eagle(self, command: str, grid: str | None = None,
+                  check: bool = False) -> dict:
+        """Fire one EAGLE command through the electronics interpreter."""
+        return self.run_eagle_batch([command], grid=grid, check=check)
+
+    def run_eagle_batch(self, commands: list[str], grid: str | None = None,
+                        check: bool = False) -> dict:
+        """Fire several EAGLE commands in order.
+
+        With the command API (:meth:`has_command_api`) the batch goes through
+        :meth:`execute_commands` with ``stop_on_error=False`` — every command
+        runs, as with ``Electron.run`` — and the returned envelope gains a
+        ``"commands"`` key with the per-command results. ``check=True`` raises
+        :class:`FusionError` if any command failed. Without the API, each command
+        goes through ``Electron.run``, which returns no echo (``check`` can't see
+        failures there; verify by re-reading).
 
         Each is terminated with ``;`` so it self-completes; an un-terminated
         interactive command (``MOVE``) would leave its tool active and block the
@@ -225,6 +310,15 @@ class FusionBridge:
         unit before firing ``MOVE Rn (x y)`` etc.).
         """
         cmds = ([f"GRID {grid}"] if grid else []) + list(commands)
+        cmds = [c.strip() if c.strip().endswith(";") else c.strip() + ";" for c in cmds]
+        if self.has_command_api():
+            res = self.execute_commands(cmds, stop_on_error=False)
+            failed = [r for r in res["results"]
+                      if r["status"] not in (CMD_SUCCEEDED, CMD_SUCCEEDED_WITH_WARNING)]
+            if check and failed:
+                raise FusionError(f"EAGLE command(s) failed: {failed}")
+            return {"success": True, "commands": res,
+                    "message": f"ran {len(cmds)} command(s), {len(failed)} failed"}
         body = ["import adsk.core", "def run(_context):",
                 "    app = adsk.core.Application.get()"]
         for c in cmds:

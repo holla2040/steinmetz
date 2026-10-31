@@ -53,7 +53,7 @@ import re
 import time
 
 from board import Board, ContactBox, read_board
-from bridge import FusionBridge
+from bridge import FusionBridge, FusionError
 from placevec import VecEngine
 from selection import read_selection
 
@@ -98,8 +98,44 @@ class Progress:
             print(f"[{format_elapsed(now - self.start)}] {message}", flush=True)
 
 
+_GRID_UNIT_MM = {0: 0.001, 1: 1.0, 2: 0.0254, 3: 25.4}  # mic, mm, mil, inch
+
+
+def _read_main_grid_mm_api(bridge: FusionBridge) -> float | None:
+    """Main grid via ``adsk.electron.Board.grid``; None if the API can't say.
+
+    Same values the ULP reads (``distance`` in ``unitdist`` units; GridUnits
+    0 mic / 1 mm / 2 mil / 3 inch), without writing and RUNning a ULP — so no
+    ``RUN`` dispatch to arm the execute-channel latch.
+    """
+    script = "\n".join([
+        "import adsk.core, adsk.electron",
+        "def run(_context):",
+        "    b = adsk.electron.Board.cast(adsk.core.Application.get().activeProduct)",
+        "    if b:",
+        "        print('__GRID__ %r %d' % (b.grid.distance, int(b.grid.unitdist)))",
+        "    else:",
+        "        print('__GRID__ none')",
+    ])
+    try:
+        msg = bridge.execute(script).get("message", "") or ""
+    except FusionError:
+        return None
+    parts = msg.split("__GRID__", 1)[-1].split() if "__GRID__" in msg else []
+    if len(parts) < 2:
+        return None
+    try:
+        grid = float(parts[0]) * _GRID_UNIT_MM.get(int(parts[1]), 1.0)
+    except ValueError:
+        return None
+    return grid if grid > 0 else None
+
+
 def _read_main_grid_mm(bridge: FusionBridge) -> float:
     """Read the visible EAGLE main grid distance in millimeters."""
+    grid = _read_main_grid_mm_api(bridge)
+    if grid is not None:
+        return grid
     out_path = r"C:\tmp\steinmetz_grid_main.txt"
     ulp_path = r"C:\tmp\steinmetz_grid_main.ulp"
     out_fwd = out_path.replace("\\", "/")
@@ -144,7 +180,7 @@ def _read_main_grid_mm(bridge: FusionBridge) -> float:
         unitdist = int(lines[1].strip())
     except (IndexError, ValueError) as exc:
         raise RuntimeError(f"invalid Fusion main-grid response: {body!r}") from exc
-    grid *= {0: 0.001, 1: 1.0, 2: 0.0254, 3: 25.4}.get(unitdist, 1.0)
+    grid *= _GRID_UNIT_MM.get(unitdist, 1.0)
     if grid <= 0:
         raise RuntimeError(f"Fusion returned a non-positive main grid: {grid:g}")
     return grid

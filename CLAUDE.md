@@ -126,6 +126,17 @@ Commands that work this way: `MOVE`, `ROTATE`, `VALUE`, `CHANGE PACKAGE`,
 `ATTRIBUTE`, `EXPORT`, `script <file>`. If Autodesk ever makes the API
 read/write, only `bridge.py`'s write layer changes — tools on top are unaffected.
 
+**Update 2026-10-30 (Fusion Insider 2707.0.73, preview API):** that has started.
+`EcadDrawing.executeCommands` runs a batch of EAGLE commands and returns a
+status + messages per command, and most `adsk.electron` objects now have
+setters (`Element.x/angle/locked`, `Part.value`, `Net.name`, `Grid.distance`, …).
+`run_eagle_batch` now uses `execute_commands` when `has_command_api()` is true
+and falls back to `Electron.run` otherwise (`STEINMETZ_LEGACY_WRITE=1` forces
+the fallback); `place._read_main_grid_mm` reads `Board.grid` before falling
+back to the grid ULP. Selection capture still needs the `ingroup()` ULP — the
+API has `Schematic.selectObjects` but no way to read the current group. Details
+in `docs/fusion-bridge.md` → "The command API (Insider builds)".
+
 ## Conventions and gotchas
 
 - **Flat `src/` layout.** Modules import each other by bare name
