@@ -12,19 +12,21 @@ client library, no plugin. Two capabilities:
   :meth:`execute_commands`, which returns a status and messages per command;
   older builds fall back to ``Electron.run`` (no echo).
 
-Windows-side setup (once):
+Setup (once), on the machine running Fusion (Windows or macOS):
 
 * Fusion running with an Electronics document open.
-* Preferences ▸ General ▸ API ▸ "Fusion MCP Server" enabled.
-* NAT-mode WSL only: a Windows port-forward from the WSL gateway IP to Fusion's
-  loopback:27182, bound to the **gateway IP, not 0.0.0.0** (see
+* Preferences ▸ General ▸ API ▸ "Fusion MCP Server" enabled. Fusion then
+  listens on ``127.0.0.1:27182``; run natively on the same machine and nothing
+  else is needed.
+* Legacy, WSL2 in NAT mode only: a Windows port-forward from the WSL gateway IP
+  to Fusion's loopback:27182, bound to the **gateway IP, not 0.0.0.0** (see
   ``docs/fusion-bridge.md``). Mirrored-mode WSL shares the Windows loopback and
   needs no forward — :func:`default_host` probes and picks the right one.
 
 Every non-obvious rule below was learned the hard way and is encoded here so
 callers don't rediscover it: hit a host that actually reaches Fusion (loopback
-under mirrored WSL; the gateway port-forward under NAT, where loopback is
-unreachable), capture ``MCP-Session-Id`` from the *initialize response header* and
+natively and under mirrored WSL; the gateway port-forward under NAT-mode WSL,
+where loopback is unreachable), capture ``MCP-Session-Id`` from the *initialize response header* and
 resend it, send ``notifications/initialized`` before any ``tools/call``,
 default reads to a 1000-row page (the server silently caps at 100), and wrap
 board edits in ``Electron.run`` with a trailing ``;`` (a bare ``MOVE`` leaves
@@ -36,6 +38,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 from typing import Any
 
 import requests
@@ -84,20 +87,76 @@ def default_gateway() -> str:
     raise RuntimeError("could not determine the default gateway (Windows host IP)")
 
 
-def default_host(port: int = DEFAULT_PORT) -> str:
-    """Pick the host that actually reaches Fusion, whatever the WSL mode.
+def is_wsl() -> bool:
+    """True when this Python runs inside WSL (Linux on a Windows host)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        with open("/proc/version") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
 
-    Under WSL2 **NAT** networking loopback is unreachable and Fusion is reached
-    through a Windows port-forward on the default-route gateway; under
-    **mirrored** networking loopback is shared with Windows (and the gateway is
-    the LAN router, which can never work). A quick connect probe on loopback
-    distinguishes the two without asking which mode we're in.
+
+def fusion_scratch_dir() -> str:
+    """Fusion-side directory for Steinmetz's temporary files (ULPs, PNGs, results).
+
+    This is a path on the machine running *Fusion*, written the way Fusion
+    spells it. ``STEINMETZ_FUSION_TMP`` overrides it; otherwise ``/tmp`` on
+    macOS and ``C:\\tmp`` on Windows (and under WSL, where Fusion runs on the
+    Windows host). The path ends up single-quoted inside EAGLE commands, so it
+    must not contain quote characters.
+    """
+    d = os.environ.get("STEINMETZ_FUSION_TMP") or (
+        "/tmp" if sys.platform == "darwin" else "C:\\tmp")
+    if "'" in d or '"' in d:
+        raise ValueError(f"Fusion scratch dir must not contain quotes: {d!r}")
+    return d
+
+
+def fusion_scratch_path(name: str) -> str:
+    """``name`` inside :func:`fusion_scratch_dir`, with that dir's separator."""
+    d = fusion_scratch_dir()
+    sep = "\\" if ("\\" in d or (len(d) >= 2 and d[1] == ":")) else "/"
+    return d.rstrip("\\/") + sep + name
+
+
+def local_path(fusion_path: str) -> str:
+    """Where a Fusion-side path is visible to *this* Python.
+
+    Natively (Windows, macOS) Fusion and Steinmetz share a filesystem, so the
+    path is unchanged. Under WSL, ``C:\\tmp\\x.png`` maps to ``/mnt/c/tmp/x.png``.
+    """
+    if not is_wsl():
+        return fusion_path
+    p = fusion_path.replace("\\", "/")
+    if len(p) >= 2 and p[1] == ":":
+        return "/mnt/" + p[0].lower() + p[2:]
+    return p
+
+
+def default_host(port: int = DEFAULT_PORT) -> str:
+    """Pick the host that actually reaches Fusion.
+
+    Natively (Windows, macOS) and under **mirrored** WSL2 networking Fusion is
+    on loopback. Only under WSL2 **NAT** networking is loopback unreachable, and
+    Fusion is reached through a Windows port-forward on the default-route
+    gateway. A quick connect probe on loopback decides; the gateway fallback is
+    tried only on Linux (WSL).
     """
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.25):
             return "127.0.0.1"
     except OSError:
-        return default_gateway()
+        if sys.platform.startswith("linux"):
+            return default_gateway()
+        raise FusionError(
+            f"Fusion isn't answering on 127.0.0.1:{port}. Check that Fusion is "
+            "running, an Electronics document is open, and Preferences > General "
+            "> API > Fusion MCP Server is enabled (or set STEINMETZ_FUSION_HOST / "
+            "STEINMETZ_FUSION_PORT).") from None
 
 
 class FusionError(RuntimeError):
@@ -133,7 +192,8 @@ class FusionBridge:
         self._sid = resp.headers.get("mcp-session-id")
         if not self._sid:
             raise FusionError("initialize returned no MCP-Session-Id header — is the "
-                              "Fusion MCP Server enabled and the port-forward up?")
+                              "Fusion MCP Server enabled (and, under NAT-mode WSL, "
+                              "the port-forward up)?")
         # 2) say "initialized" BEFORE any tools/call, or every call is rejected.
         self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
         return self
@@ -146,8 +206,9 @@ class FusionBridge:
 
     def _headers(self) -> dict[str, str]:
         # Fusion's MCP server validates the Host header (DNS-rebinding
-        # protection) and 403s anything but localhost. Through the WSL
-        # port-forward we connect to the gateway IP, so spoof a loopback Host.
+        # protection) and 403s anything but localhost. Natively we connect to
+        # loopback anyway; through the NAT-mode WSL port-forward we connect to
+        # the gateway IP, so always send a loopback Host.
         h = {"Content-Type": "application/json", "Accept": _ACCEPT,
              "Host": f"127.0.0.1:{self.port}"}
         if self._sid:
@@ -333,10 +394,10 @@ class FusionBridge:
         return self.execute("\n".join(body))
 
     def run_scr(self, windows_path: str, grid: str | None = None) -> dict:
-        """Run a ``.scr`` file already on the Fusion (Windows) filesystem.
+        """Run a ``.scr`` file already on the Fusion host's filesystem.
 
-        ``windows_path`` is a Fusion-host path with single backslashes, e.g.
-        ``r"C:\\tmp\\changes.scr"``. The ``.scr`` runs until its first failing
+        ``windows_path`` is a Fusion-host path, e.g. ``r"C:\\tmp\\changes.scr"``
+        on Windows (single backslashes) or ``/tmp/changes.scr`` on macOS. The ``.scr`` runs until its first failing
         command; ``Electron.run`` returns no echo, so verify out-of-band.
         """
         full = f'Electron.run "script {windows_path}"'
