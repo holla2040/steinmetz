@@ -16,16 +16,17 @@ sees the selection is EAGLE itself: in a User-Language Program (ULP),
 
 So :func:`read_selection` is fully bridge-driven — one :meth:`execute` round trip:
 
-1. Fusion-side Python writes a tiny ULP to ``C:\\tmp\\steinmetz_selection.ulp``.
+1. Fusion-side Python writes a tiny ULP to ``steinmetz_selection.ulp`` in the
+   Fusion scratch dir (``bridge.fusion_scratch_dir``: ``C:\\tmp`` on Windows,
+   ``/tmp`` on macOS).
 2. It runs that ULP via ``Electron.run "RUN '…';"``; the ULP walks the board and
-   writes every grouped element's ref to ``C:\\tmp\\steinmetz_selection.txt``
+   writes every grouped element's ref to ``steinmetz_selection.txt`` there
    (one per line).
 3. The same script reads that file back and prints it; we parse the refs out of
    the execute ``message``.
 
 No Scripts panel, no Text Commands paste — nothing has to be run by hand in
-Fusion. The output file is left on disk so the WSL side can read it too
-(``C:\\tmp`` == WSL ``~/tmp`` on this host).
+Fusion. The output file is left on disk for inspection.
 
 **The gesture that matters:** the parts must be in the EAGLE *group*, i.e.
 selected with the **Group** tool (the rubber-band / lasso select), not a single
@@ -42,14 +43,12 @@ from __future__ import annotations
 
 import sys
 
-from bridge import FusionBridge, FusionError
+from bridge import FusionBridge, FusionError, fusion_scratch_path
 
-# C:\tmp == WSL ~/tmp on this host, so the output file is visible from WSL too.
-SELECTION_PATH = r"C:\tmp\steinmetz_selection.txt"   # refs, one per line
-_ULP_PATH = r"C:\tmp\steinmetz_selection.ulp"        # the generated ULP
-
-_OUT_FWD = SELECTION_PATH.replace("\\", "/")         # EAGLE wants forward slashes
-_ULP_FWD = _ULP_PATH.replace("\\", "/")
+# Both files live in the Fusion-side scratch dir (bridge.fusion_scratch_dir:
+# C:\tmp on Windows/WSL, /tmp on macOS, STEINMETZ_FUSION_TMP overrides).
+SELECTION_NAME = "steinmetz_selection.txt"   # refs, one per line
+_ULP_NAME = "steinmetz_selection.ulp"        # the generated ULP
 
 # The ULP. ``ingroup(E)`` is true for each element in the active GROUP; ``output``
 # truncates the file even when nothing matches (so an empty file == empty group).
@@ -61,30 +60,32 @@ _ULP = '''output("__OUT__", "wt") {
     }
   }
 }
-'''.replace("__OUT__", _OUT_FWD)
-
-# Run the ULP via the EAGLE interpreter. Single quotes around the path — no
-# double quotes (they'd break the ``Electron.run "<cmd>"`` wrapper).
-_RUN_CMD = "Electron.run \"RUN '%s';\"" % _ULP_FWD
+'''
 
 
 def _capture_script() -> str:
     """Fusion-side Python: write the ULP, run it, echo the result file back."""
+    out_path = fusion_scratch_path(SELECTION_NAME)
+    ulp_path = fusion_scratch_path(_ULP_NAME)
+    # EAGLE wants forward slashes. Single quotes around the RUN path — no double
+    # quotes (they'd break the ``Electron.run "<cmd>"`` wrapper).
+    ulp = _ULP.replace("__OUT__", out_path.replace("\\", "/"))
+    run_cmd = "Electron.run \"RUN '%s';\"" % ulp_path.replace("\\", "/")
     return "\n".join([
         "import adsk.core",
         "import os",
         "def run(_context):",
         "    app = adsk.core.Application.get()",
-        f"    ulp_path = {_ULP_PATH!r}",
-        f"    out_path = {SELECTION_PATH!r}",
+        f"    ulp_path = {ulp_path!r}",
+        f"    out_path = {out_path!r}",
         "    os.makedirs(os.path.dirname(ulp_path), exist_ok=True)",
         "    try:",                      # drop a stale result so a failed run
         "        os.remove(out_path)",   # can't masquerade as the current one
         "    except OSError:",
         "        pass",
         "    with open(ulp_path, 'w') as f:",
-        f"        f.write({_ULP!r})",
-        f"    app.executeTextCommand({_RUN_CMD!r})",
+        f"        f.write({ulp!r})",
+        f"    app.executeTextCommand({run_cmd!r})",
         "    print('__SEL_START__')",
         "    try:",
         "        with open(out_path) as f:",

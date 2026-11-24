@@ -53,7 +53,8 @@ import re
 import time
 
 from board import Board, ContactBox, read_board
-from bridge import CMD_FAILED, CMD_NOT_EXECUTED, FusionBridge, FusionError
+from bridge import (CMD_FAILED, CMD_NOT_EXECUTED, FusionBridge, FusionError,
+                    fusion_scratch_path)
 from placevec import VecEngine
 from selection import read_selection
 
@@ -136,8 +137,13 @@ def _read_main_grid_mm(bridge: FusionBridge) -> float:
     grid = _read_main_grid_mm_api(bridge)
     if grid is not None:
         return grid
-    out_path = r"C:\tmp\steinmetz_grid_main.txt"
-    ulp_path = r"C:\tmp\steinmetz_grid_main.ulp"
+    return _read_main_grid_mm_ulp(bridge)
+
+
+def _read_main_grid_mm_ulp(bridge: FusionBridge) -> float:
+    """Main grid via a temporary ULP in the Fusion scratch dir (any build)."""
+    out_path = fusion_scratch_path("steinmetz_grid_main.txt")
+    ulp_path = fusion_scratch_path("steinmetz_grid_main.ulp")
     out_fwd = out_path.replace("\\", "/")
     ulp_fwd = ulp_path.replace("\\", "/")
     ulp = f'''output("{out_fwd}", "wt") {{
@@ -154,6 +160,7 @@ def _read_main_grid_mm(bridge: FusionBridge) -> float:
         "    app = adsk.core.Application.get()",
         f"    ulp_path = {ulp_path!r}",
         f"    out_path = {out_path!r}",
+        "    os.makedirs(os.path.dirname(ulp_path), exist_ok=True)",
         "    try:",
         "        os.remove(out_path)",
         "    except OSError:",
