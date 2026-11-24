@@ -107,8 +107,10 @@ Coordinates are returned in the document's active unit, reported as
 
 ## The write path — driving the EAGLE command line
 
-The Electronics **object** API is read-only. The writable channel is the
-**EAGLE command interpreter**, reached by running Python in Fusion via
+The Electronics **object** API was read-only in the production build tested
+here (2026-06-30); Fusion Insider 2707.0.73 adds setters and a batch command
+API — see "The command API (Insider builds)" below. Without those, the writable
+channel is the **EAGLE command interpreter**, reached by running Python in Fusion via
 `fusion_mcp_execute` and wrapping each command in **`Electron.run "…"`**:
 
 ```python
@@ -166,7 +168,27 @@ def run(_context):
 - **Still true:** board `MOVE`s fail with 'Switch to "Ignore Violator"' while
   live DRC is on; commands that want more input (`BUS`, `POLYGON`, some `NET`
   forms) can open a dialog and latch the execute channel exactly like
-  `Electron.run` does.
+  `Electron.run` does. The refusal comes back as status 2 with the message
+  `Action has violated DRC parameters. Switch to "Ignore Violator" in the
+  navigation toolbar and try again.`
+  - **Ignore Violators resets on every Fusion restart** — it is off again after
+    each launch, so expect the refusal on the first placement of a session.
+  - **Turn it on from a script** (through `execute`):
+
+    ```python
+    import adsk.core
+    def run(_context):
+        ui = adsk.core.Application.get().userInterface
+        ui.commandDefinitions.itemById("IgnoreViolatorsCommand").execute()
+    ```
+
+    Executing it once switched the mode on (a following `MOVE` succeeded).
+    **Whether executing it again toggles it off is not verified**, so don't run
+    it blind more than once per session — confirm with a test `MOVE` instead.
+    Related ids: `ViolationModeCommand`, `PushViolatorsCommand`,
+    `WalkaroundViolatorsCommand`.
+  - `place.py` prints every refused command and, on this message, a hint to
+    turn Ignore Violators on.
 - **Setters.** Most objects are now writable directly: `Element.x/y/angle/
   locked`, `Part.value`, `Instance.angle`, `Net.name`, `Bus.name` (base name
   must not end in a digit), `Junction.x`, `Grid.distance`, `Layer.color`

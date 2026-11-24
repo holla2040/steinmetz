@@ -160,6 +160,11 @@ in `docs/fusion-bridge.md` → "The command API (Insider builds)".
   empty items, not an error. Switch programmatically with `Document.activate()`
   via `execute`, and switch before firing editor-specific EAGLE commands. See
   "Switching document tabs" in `docs/fusion-bridge.md`.
+- **Board MOVEs need Ignore Violators (Insider builds).** Live DRC refuses
+  them (status 2, 'Switch to "Ignore Violator"'), and the mode resets on every
+  Fusion restart. Turn it on from a script with the `IgnoreViolatorsCommand`
+  command definition; toggle-off behavior is unverified. See "The command API
+  (Insider builds)" in `docs/fusion-bridge.md`.
 - **Schematic auto-routing: `NETROUTE` (Insider builds).** Connect pins by
   ref+pin name (`NETROUTE N 2 D1 C Q9 D;`) instead of drawing coordinate `NET`
   wires; run `SET CONFIRM YES;` first so prompts don't block the channel.

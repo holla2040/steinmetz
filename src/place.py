@@ -53,7 +53,7 @@ import re
 import time
 
 from board import Board, ContactBox, read_board
-from bridge import FusionBridge, FusionError
+from bridge import CMD_FAILED, CMD_NOT_EXECUTED, FusionBridge, FusionError
 from placevec import VecEngine
 from selection import read_selection
 
@@ -932,7 +932,24 @@ def main():
             cmds.append(f"MOVE {name} ({nx} {ny})")
     progress.log(f"applying {len(cmds)} command(s) over the bridge")
     print(f"\nApplying {len(cmds)} command(s) over the bridge...")
-    bridge.run_eagle_batch(cmds, grid="MM")
+    applied = bridge.run_eagle_batch(cmds, grid="MM")
+
+    # With the command API the envelope carries per-command results; report
+    # anything Fusion refused (2 failed, 3 not executed) before verifying, so a
+    # pad mismatch below isn't mistaken for a transform bug. Without the API
+    # (Electron.run, no echo) there is nothing to report here.
+    refused = [r for r in (applied.get("commands") or {}).get("results", [])
+               if r.get("status") in (CMD_FAILED, CMD_NOT_EXECUTED)]
+    if refused:
+        print(f"Fusion refused {len(refused)} command(s):")
+        for r in refused:
+            kind = "failed" if r["status"] == CMD_FAILED else "not executed"
+            print(f"  {r['command']}  [{kind}]")
+            for m in r.get("messages") or []:
+                print(f"    {m}")
+        if any("Ignore Violator" in m for r in refused for m in r.get("messages") or []):
+            print("  Live DRC refused the moves. Turn on Ignore Violators in Fusion "
+                  "(it resets every time Fusion restarts) and rerun.")
 
     progress.log("verifying written placement")
     after_board = read_board(bridge)
@@ -958,8 +975,12 @@ def main():
             bad.append(name)
     if bad:
         print(f"WARNING: pad positions disagree with the board for: {', '.join(bad)}")
-        print("  The rotate/move transform may not match Fusion (mirror or angle "
-              "sign). Inspect these parts before saving.")
+        if refused:
+            print("  Fusion refused some of the commands (see above), so these parts "
+                  "were not fully moved. Inspect them before saving.")
+        else:
+            print("  The rotate/move transform may not match Fusion (mirror or angle "
+                  "sign). Inspect these parts before saving.")
     else:
         print(f"Pad-position check passed for all {len(actions)} part(s).")
     print(f"Elapsed: {format_elapsed(time.monotonic() - started)}")

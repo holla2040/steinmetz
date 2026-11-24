@@ -41,17 +41,23 @@ running Fusion Electronics session, in both directions.
 - **Read** the live design — elements and their placement, pad geometry, nets,
   the connectivity graph, package outlines, the board edge. (With a board open,
   the entire EAGLE object model is readable.)
-- **Write** it back — Fusion's object API is read-only, but the EAGLE command
-  interpreter is reachable over the same endpoint via `Electron.run`, so
-  `MOVE` / `ROTATE` / `VALUE` / `CHANGE PACKAGE` / `ATTRIBUTE` / `script …` all
-  run headlessly.
+- **Write** it back — Fusion's object API was read-only in the builds this was
+  first built on, but the EAGLE command interpreter is reachable over the same
+  endpoint via `Electron.run`, so `MOVE` / `ROTATE` / `VALUE` /
+  `CHANGE PACKAGE` / `ATTRIBUTE` / `script …` all run headlessly. Fusion
+  Insider 2707.0.73 adds setters and a batch command API
+  (`EcadDrawing.executeCommands`); Steinmetz uses that when present.
 
 > **The write path is a workaround.** As of **2026-06-30** the Autodesk Fusion
-> Electronics API is **read-only**. Driving the EAGLE command line (`.scr` /
-> `Electron.run`) is how Steinmetz writes today — a deliberate stopgap. If and
-> when Autodesk makes the Electronics API read/write, the write layer in
-> `src/bridge.py` can be swapped to the native API with no change to the tools
-> built on top of it.
+> Electronics API was **read-only** in the production build tested here.
+> Driving the EAGLE command line (`.scr` / `Electron.run`) is how Steinmetz
+> writes there — a deliberate stopgap. **Fusion Insider 2707.0.73** (tested
+> 2026-10-30) adds setters on most `adsk.electron` objects and
+> `executeCommands`, which runs the same EAGLE commands with a status per
+> command; `src/bridge.py` uses it when present and falls back to
+> `Electron.run` otherwise, with no change to the tools built on top. See
+> [`docs/fusion-bridge.md`](docs/fusion-bridge.md) → "The command API (Insider
+> builds)".
 
 On top of that base, tools get added — placement, swaps, checks, exports. The
 first proof of concept is a minimal-airwire **parts placer** that reads a live
