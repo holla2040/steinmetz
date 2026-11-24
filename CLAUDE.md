@@ -11,42 +11,54 @@ for the project ethos and `docs/fusion-bridge.md` for the protocol reference.
 
 ## Setup, build, run
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e .                  # installs the dependencies: requests, numpy
+Runs natively on Windows (PowerShell) and macOS, Python 3.10+, on the same
+machine as Fusion. The last WSL-only version is the `wsl-final` tag.
 
-python examples/read_design.py    # connect + summarize the open design
-python examples/run_command.py    # prove the write path (harmless WINDOW FIT)
-python src/selection.py           # show the current GROUP-selected parts
-python src/place.py               # place the selected parts (writes MOVEs, then verifies)
-python src/screenshot.py          # snapshot the board to C:\tmp; read at /mnt/c/tmp
+```
+python -m venv .venv
+.venv\Scripts\activate            # macOS: source .venv/bin/activate
+pip install -e .                  # requests, numpy + the `steinmetz` command
+
+steinmetz read                    # connect + summarize the open design
+steinmetz run-command             # prove the write path (harmless WINDOW FIT)
+steinmetz selection               # show the current GROUP-selected parts
+steinmetz place                   # place the selected parts (writes MOVEs, then verifies)
+steinmetz screenshot              # snapshot the board to the Fusion scratch dir
+steinmetz validate                # numpy engine vs scalar spec (read-only)
 ```
 
-The top-level `Makefile` wraps these as thin aliases (`make setup`, `make read`,
-`make place`, `make screenshot`, `make selection`, `make validate`; `make help`
-lists them). It
-defaults to the `.venv` interpreter so targets run without activating first. The
-tools are flag-driven, so to pass options call the script directly
-(`.venv/bin/python src/place.py --only U1`) rather than through `make`.
+`steinmetz` (`src/steinmetz_cli.py`) passes everything after the task to the
+tool (`steinmetz place --only U1 --rotate 45`). The scripts still run directly
+(`python src/place.py --only U1`, `python examples/read_design.py`). The
+`Makefile` keeps the same tasks as Unix-shell aliases.
 
 - **There is no automated test suite, linter, or CI.** "Verify" everywhere means
   re-reading the live design and checking parts landed (see `place.py`'s verify
   step). The `Makefile` only aliases the run commands — there's no `make test`
   or `pytest`; don't look for them.
 - **Nothing runs without a live Fusion session.** Every example and tool requires
-  a Windows-side Fusion with an Electronics document open and the "Fusion MCP
-  Server" preference enabled. NAT-mode WSL additionally needs a `netsh`
-  port-forward to the WSL gateway IP; mirrored-mode WSL shares the Windows
-  loopback and needs no forward. Full setup (including the critical `0.0.0.0`
-  gotcha) is in `docs/fusion-bridge.md`.
-  If a tool can't connect, suspect this environment, not the Python: run
-  `~/claude-code-fusion-mcp-check/check.sh`
-  ([holla2040/claude-code-fusion-mcp-check](git@github.com:holla2040/claude-code-fusion-mcp-check.git))
-  — it diagnoses the link layer by layer and prints the exact fix. Report what
-  it says; don't apply ad-hoc network fixes from this repo.
+  Fusion with an Electronics document open and the "Fusion MCP Server"
+  preference enabled; Fusion listens on `127.0.0.1:27182`.
 - Host/port can be overridden with `STEINMETZ_FUSION_HOST` / `STEINMETZ_FUSION_PORT`;
-  otherwise `bridge.default_host` probes loopback first (works in mirrored-mode
-  WSL) and falls back to the WSL default-route gateway (NAT mode).
+  otherwise `bridge.default_host` probes loopback and, if nothing answers,
+  raises a clear error (on Linux/WSL it falls back to the gateway instead).
+- **Fusion-side scratch dir** (ULPs, selection/grid result files, screenshots):
+  `bridge.fusion_scratch_dir()` — `C:\tmp` on Windows and WSL, `/tmp` on
+  macOS, `STEINMETZ_FUSION_TMP` overrides. `bridge.local_path` maps it for
+  this Python (identity natively, `/mnt/c/...` under WSL).
+
+### Running under WSL2 (legacy)
+
+WSL still works as a fallback with Fusion on Windows. NAT-mode WSL needs a
+`netsh` port-forward to the WSL gateway IP; mirrored-mode WSL shares the
+Windows loopback and needs no forward. Full setup (including the critical
+`0.0.0.0` gotcha) is in `docs/fusion-bridge.md` → "Running under WSL2
+(legacy)". Scratch files in `C:\tmp` are read at `/mnt/c/tmp`. If a tool can't
+connect under WSL, suspect the environment, not the Python: run
+`~/claude-code-fusion-mcp-check/check.sh`
+([holla2040/claude-code-fusion-mcp-check](git@github.com:holla2040/claude-code-fusion-mcp-check.git))
+— it diagnoses the link layer by layer and prints the exact fix. Report what
+it says; don't apply ad-hoc network fixes from this repo.
 
 ## Architecture
 
@@ -71,7 +83,8 @@ Three layers, each built on the one below, plus a `.scr` helper:
   component-exclude regions (`--clearance` default 0.1 mm), snaps part origins
   to one tenth of Fusion's current main grid by default (`--grid` for the full
   main grid, `--nogrid` to disable; `Placer` queries the live Fusion main grid
-  every run by writing/running `C:\tmp\steinmetz_grid_main.ulp`, which reads
+  every run via `Board.grid`, or failing that by writing/running
+  `steinmetz_grid_main.ulp` in the Fusion scratch dir, which reads
   `B.grid.distance` and `B.grid.unitdist`), writes
   `ROTATE`/`MOVE`s back, then re-reads to verify pad positions. Selection comes
   from `selection.py`;
@@ -98,10 +111,10 @@ Three layers, each built on the one below, plus a `.scr` helper:
   Fusion *design* selection collection, never wired to the Electronics editor
   (`Element` has no selected flag; `selectionSets` throws). The Electronics
   selection lives in the embedded EAGLE engine, which the bridge *can* drive: so
-  `read_selection` (one `execute`) writes a tiny ULP to
-  `C:\tmp`, runs it via `Electron.run "RUN '…'"`, and the ULP's `ingroup(E)`
+  `read_selection` (one `execute`) writes a tiny ULP to the
+  Fusion scratch dir, runs it via `Electron.run "RUN '…'"`, and the ULP's `ingroup(E)`
   walks the board writing every grouped ref to
-  `C:\tmp\steinmetz_selection.txt`, which the same call reads back. **Gesture:
+  `steinmetz_selection.txt` there, which the same call reads back. **Gesture:
   parts must be GROUP-selected (rubber-band Group tool), not click-selected.**
   `place.py` uses this as its default input; `--only` overrides with an explicit
   ref list. `scripts/capture_selection.py` is an obsolete manual fallback (the
@@ -109,9 +122,9 @@ Three layers, each built on the one below, plus a `.scr` helper:
 - **`src/screenshot.py` (`capture`) — visual verification.** Snapshots the board
   to a PNG for a look (the place → screenshot verify loop). `app.activeViewport`
   is `None` in the PCB Editor, so `saveAsImageFile` can't be used — it fires
-  `WINDOW FIT` then the EAGLE `EXPORT IMAGE '<path>' <dpi>` command. Writes to
-  `C:\tmp`; read the PNG from WSL at `/mnt/c/tmp` (`~/tmp` is a symlink there on
-  this host).
+  `WINDOW FIT` then the EAGLE `EXPORT IMAGE '<path>' <dpi>` command. Writes
+  `steinmetz_view.png` to the Fusion scratch dir (same path locally; under WSL
+  read it at `/mnt/c/tmp`).
 
 Future tools (swaps, inventory checks, exports) should be new modules under
 `src/` that take a `FusionBridge` / `Board` and follow the same loop. Anything
@@ -142,12 +155,12 @@ in `docs/fusion-bridge.md` → "The command API (Insider builds)".
 - **Flat `src/` layout.** Modules import each other by bare name
   (`from bridge import FusionBridge`), so `src/` must be on the path. Tools run as
   `python src/place.py` (the script's own dir is on `sys.path`); examples insert
-  `src/` themselves. `pyproject.toml` only packages `bridge` and `scr` — `board`
-  and `place` are run as scripts, not installed.
+  `src/` themselves. `pyproject.toml` lists every `src/` module the `steinmetz`
+  command reaches as a top-level `py-module` — add new ones there too.
 - **The bridge rules are load-bearing — don't "simplify" them away.** Each was
   learned the hard way and is documented inline in `bridge.py`/`scr.py` and in
-  `docs/fusion-bridge.md`: hit the gateway IP (WSL2 can't reach loopback);
-  send a loopback `Host` header (Fusion's MCP server 403s "Invalid Host header"
+  `docs/fusion-bridge.md`: hit loopback natively, the gateway IP under NAT-mode
+  WSL2 (which can't reach loopback); send a loopback `Host` header (Fusion's MCP server 403s "Invalid Host header"
   on anything but localhost);
   capture `MCP-Session-Id` from the *initialize response header* and resend it;
   send `notifications/initialized` before any `tools/call`; reads silently cap at
@@ -173,7 +186,7 @@ in `docs/fusion-bridge.md` → "The command API (Insider builds)".
   knowledge base (hot loops, decoupling, snubbers, grounding) plus EAGLE ULP
   exporters (`tools/fusion-electronics-*.ulp`) that dump full schematic/board
   connectivity JSON and high-res images — run them via the bridge from the
-  matching editor tab (copy to `C:\tmp`, output lands in `<ulp-dir>/../exports`).
+  matching editor tab (copy to the Fusion scratch dir, output lands in `<ulp-dir>/../exports`).
 - **Writes are unsaved.** Changes apply to the live design but are not persisted
   until the user saves in Fusion; reopening reverts them. `Electron.run` returns
   no echo, so verify out-of-band by re-reading.

@@ -11,35 +11,51 @@ endpoint; you `POST` JSON-RPC to it and call two tools:
 reference for *why* it does what it does. Every rule here was learned the hard
 way — skip one and you get a confusing error.
 
-## One-time setup (Windows side)
+## One-time setup
+
+Run Steinmetz natively on the machine running Fusion (Windows or macOS).
 
 1. Fusion running, an **Electronics document open** (schematic or board).
 2. **Preferences ▸ General ▸ API ▸ "Fusion MCP Server"** enabled. (This Autodesk
    toggle is the only thing here called "MCP" — it just publishes the HTTP
    endpoint on `127.0.0.1:27182`.)
-3. This step depends on the WSL networking mode (`wslinfo --networking-mode`):
-   - **mirrored** — nothing to do. WSL shares the Windows loopback, so
-     `127.0.0.1:27182` just works, and no portproxy rule should exist for the
-     port (a leftover `0.0.0.0` rule steals the bind from Fusion — see the
-     warning below).
-   - **NAT** — you can't reach the Windows loopback, so forward Fusion's port
-     to the **WSL gateway IP** (the Windows host as seen from WSL):
 
-   ```powershell
-   # GWIP = `ip route | grep default | awk '{print $3}'` from WSL, e.g. 172.17.64.1
-   netsh interface portproxy add v4tov4 listenaddress=GWIP listenport=27182 ^
-         connectaddress=127.0.0.1 connectport=27182
-   ```
+That's all: `bridge.default_host` finds Fusion on loopback. If it can't, it
+says so (Fusion not running, no Electronics document, or the preference off).
+Health check: `curl http://127.0.0.1:27182/mcp` (`curl.exe` in Windows
+PowerShell) should return `{"error":"Not Found"}`. If Fusion silently moved to another port (it does when
+27182 is taken), set `STEINMETZ_FUSION_PORT`.
 
-   ⚠️ **Bind the gateway IP, never `0.0.0.0`.** A `0.0.0.0:27182` listener
-   covers loopback too, so it steals the bind from Fusion's own server (which
-   silently moves to a random port) and forwards to itself — connections hang
-   or "close unexpectedly." This bit for real on 2026-08-25 after a switch to
-   mirrored mode left a stale `0.0.0.0` rule behind. Health check (on
-   Windows): `curl http://127.0.0.1:27182/mcp` should return
-   `{"error":"Not Found"}` when healthy.
+## Running under WSL2 (legacy)
 
-### When the connection misbehaves
+Steinmetz was developed under WSL2; the last WSL-only version is the
+`wsl-final` git tag. WSL still works as a fallback, with Fusion on the Windows
+host. Fusion-side scratch files go to `C:\tmp`, which WSL reads at
+`/mnt/c/tmp` (`bridge.local_path` does the mapping). The extra network step
+depends on the WSL networking mode (`wslinfo --networking-mode`):
+
+- **mirrored** — nothing to do. WSL shares the Windows loopback, so
+  `127.0.0.1:27182` just works, and no portproxy rule should exist for the
+  port (a leftover `0.0.0.0` rule steals the bind from Fusion — see the
+  warning below).
+- **NAT** — you can't reach the Windows loopback, so forward Fusion's port
+  to the **WSL gateway IP** (the Windows host as seen from WSL):
+
+  ```powershell
+  # GWIP = `ip route | grep default | awk '{print $3}'` from WSL, e.g. 172.17.64.1
+  netsh interface portproxy add v4tov4 listenaddress=GWIP listenport=27182 ^
+        connectaddress=127.0.0.1 connectport=27182
+  ```
+
+  ⚠️ **Bind the gateway IP, never `0.0.0.0`.** A `0.0.0.0:27182` listener
+  covers loopback too, so it steals the bind from Fusion's own server (which
+  silently moves to a random port) and forwards to itself — connections hang
+  or "close unexpectedly." This bit for real on 2026-08-25 after a switch to
+  mirrored mode left a stale `0.0.0.0` rule behind. Health check (on
+  Windows): `curl http://127.0.0.1:27182/mcp` should return
+  `{"error":"Not Found"}` when healthy.
+
+### When the connection misbehaves under WSL
 
 Don't re-derive the diagnosis — run
 `~/claude-code-fusion-mcp-check/check.sh`
@@ -52,15 +68,16 @@ apply ad-hoc netsh/proxy workarounds from this repo.
 
 ## The handshake (each rule bites if skipped)
 
-1. **Hit a host that reaches Fusion.** Mirrored-mode WSL: `127.0.0.1` directly.
-   NAT-mode WSL: the gateway IP (loopback is unreachable). `bridge.default_host`
-   probes loopback first and falls back to the gateway, so both modes work
-   unconfigured.
+1. **Hit a host that reaches Fusion.** Natively and in mirrored-mode WSL:
+   `127.0.0.1`. NAT-mode WSL: the gateway IP (loopback is unreachable).
+   `bridge.default_host` probes loopback first; only on Linux (WSL) does it fall
+   back to the gateway — elsewhere it raises a clear "Fusion isn't answering"
+   error.
 2. **Send a loopback `Host` header** (`Host: 127.0.0.1:27182`). Fusion's MCP
    server validates the Host header (DNS-rebinding protection) and returns
    `403 {"error": "Invalid Host header"}` for anything but localhost — which is
-   exactly what you send by default when hitting the gateway IP. `bridge.py`
-   spoofs it on every request.
+   exactly what you send by default when hitting the WSL gateway IP. `bridge.py`
+   sends it on every request.
 3. **`initialize` once**, and capture **`MCP-Session-Id` from the *response
    header***. Resend it on every later request. Omit it → `Missing MCP-Session-Id
    header`.
@@ -132,7 +149,8 @@ def run(_context):
   tool **active**, and the next `fusion_mcp_execute` is rejected with `Cannot
   perform 'script' while a command dialog is open`. There is no bridge API to
   send Esc — the user must press Esc in Fusion. `run_eagle*` always appends `;`.
-- **Paths are Fusion-host (Windows) paths**; a `.scr` stops at its first failing
+- **Paths are Fusion-host paths** (`C:\tmp\…` on Windows, `/tmp/…` on macOS),
+  written with forward slashes inside single quotes in EAGLE commands; a `.scr` stops at its first failing
   command; changes are **unsaved** until the user saves in Fusion.
 
 Commands that work this way include `MOVE`, `ROTATE`, `VALUE`, `CHANGE PACKAGE`,
@@ -292,16 +310,20 @@ follow the active tab.
 
 Some Electronics state is only available through the embedded EAGLE runtime. The
 same `Electron.run` path can run a temporary ULP that writes a result file on
-the Windows host, then the Fusion-side Python script reads that file back and
+the Fusion host, then the Fusion-side Python script reads that file back and
 prints it into the bridge response.
 
-Current users:
+The files live in the Fusion-side scratch dir, `bridge.fusion_scratch_dir()`:
+`C:\tmp` on Windows (and under WSL), `/tmp` on macOS, overridable with
+`STEINMETZ_FUSION_TMP` (no quote characters — the path is single-quoted in
+EAGLE commands). Current users:
 
-- `src/selection.py` writes a temporary selection ULP under `C:\tmp`, runs it,
-  and reads `C:\tmp\steinmetz_selection.txt`. The ULP uses `ingroup(E)`, so it
+- `src/selection.py` writes a temporary selection ULP there, runs it,
+  and reads `steinmetz_selection.txt`. The ULP uses `ingroup(E)`, so it
   sees GROUP-selected board elements, not Fusion's design-selection collection.
-- `src/place.py` writes `C:\tmp\steinmetz_grid_main.ulp`, runs it, and reads
-  `C:\tmp\steinmetz_grid_main.txt`. The ULP prints `B.grid.distance` and
+- `src/place.py` (when the API's `Board.grid` isn't available) writes
+  `steinmetz_grid_main.ulp`, runs it, and reads
+  `steinmetz_grid_main.txt`. The ULP prints `B.grid.distance` and
   `B.grid.unitdist`; the placer converts that live main-grid value to
   millimeters on every placement run.
 
