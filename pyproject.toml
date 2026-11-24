@@ -12,9 +12,14 @@ license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["requests", "numpy"]
 
-# Flat source layout: the modules live in src/ (steinmetz is only the project name).
+[project.scripts]
+steinmetz = "steinmetz_cli:main"
+
+# Flat source layout: the modules live in src/ (steinmetz is only the project name)
+# and import each other by bare name, so every module the CLI reaches is listed.
 [tool.setuptools]
-py-modules = ["bridge", "scr"]
+py-modules = ["bridge", "scr", "board", "placevec", "selection", "place",
+              "screenshot", "steinmetz_cli"]
 
 [tool.setuptools.package-dir]
 "" = "src"
