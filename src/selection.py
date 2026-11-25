@@ -104,6 +104,7 @@ def read_selection(bridge: FusionBridge) -> list[str]:
     :class:`FusionError` if the capture produced no parseable output or the ULP
     didn't run (e.g. no Board editor open).
     """
+    bridge.ensure_board()  # the ULP walks the board; it finds nothing from the schematic
     msg = bridge.execute(_capture_script()).get("message", "") or ""
     if "__SEL_START__" not in msg or "__SEL_END__" not in msg:
         raise FusionError(f"selection capture produced no parseable output: {msg!r}")

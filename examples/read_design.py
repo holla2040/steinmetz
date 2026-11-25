@@ -1,6 +1,6 @@
 """Connect to a live Fusion Electronics design and summarize it.
 
-Run from the repo root, with a board (or schematic) open in Fusion:
+Run from the repo root, with a design open (it switches to the board) in Fusion:
 
     python examples/read_design.py
 """
@@ -13,6 +13,7 @@ from bridge import FusionBridge  # noqa: E402
 
 b = FusionBridge().connect()
 print(f"connected: {b.url}  (session {b._sid[:8]}…)")
+b.ensure_board()  # board reads come back empty while the schematic is active
 
 elements = b.electronics_read("electronics.Element",
                               fields=["name", "value", "x", "y", "angle"])

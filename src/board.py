@@ -178,7 +178,9 @@ def _rotated_box(points: list[tuple[float, float]], angle: float) -> ContactBox:
 
 
 def read_board(bridge: FusionBridge) -> Board:
-    """Pull the active Fusion Electronics board into a :class:`Board`."""
+    """Pull the Fusion Electronics board into a :class:`Board` (switching to the
+    board editor first if the schematic is active)."""
+    bridge.ensure_board()
     els = bridge.electronics_read(
         "electronics.Element",
         fields=["object_id", "name", "value", "x", "y", "angle", "package_object_id"])

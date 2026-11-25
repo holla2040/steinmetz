@@ -39,6 +39,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from typing import Any
 
 import requests
@@ -277,6 +278,35 @@ class FusionBridge:
                 break
             offset += len(batch)
         return items
+
+    def ensure_board(self, timeout: float = 10.0) -> None:
+        """Make the board editor the active one, switching from the schematic if needed.
+
+        Reads follow the active editor: from the schematic, ``electronics.Board``
+        and ``electronics.Element`` read empty. So probe with a read (reads are
+        never latched) and fire ``EDIT .brd;`` only if the board isn't already
+        current — a no-op ``EDIT`` arms Fusion's invisible dialog latch, which
+        only Esc in the Fusion window clears. Same pattern as Hendley's and
+        ThomsonLint's ``ensure_board``. Fusion switches asynchronously, so poll.
+        """
+        if self._board_readable():
+            return
+        result = self.run_eagle("EDIT .brd;") or {}
+        if result.get("success") is False:
+            raise FusionError(f"Fusion refused EDIT .brd; {result}")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._board_readable():
+                return
+            time.sleep(0.5)
+        raise FusionError("EDIT .brd; was accepted but the board never became "
+                          "readable — does this design have a board?")
+
+    def _board_readable(self) -> bool:
+        probe = self._tool("fusion_mcp_electronics_read",
+                           {"entity_type": "electronics.Board",
+                            "object": {"pagination": {"limit": 1, "offset": 0}}})
+        return bool(probe.get("items"))
 
     def list_entity_types(self) -> list[str]:
         """List the available ``electronics.*`` schema/entity resource URIs."""

@@ -47,6 +47,7 @@ def capture(bridge: FusionBridge, win_path: str | None = None,
     except FileNotFoundError:
         pass
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    bridge.ensure_board()  # otherwise EXPORT IMAGE snapshots the schematic
     if fit:
         bridge.run_eagle("WINDOW FIT")
     # EAGLE wants forward slashes / single quotes (no double-quotes over the bridge).

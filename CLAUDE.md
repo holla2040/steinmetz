@@ -170,7 +170,11 @@ in `docs/fusion-bridge.md` → "The command API (Insider builds)".
   commands (they break the `Electron.run "…"` wrapper — EAGLE uses single quotes).
 - **Reads and commands follow the active document tab.** Schematic entities need
   the Schematic tab active, board entities the Board tab; the wrong tab returns
-  empty items, not an error. Switch programmatically with `Document.activate()`
+  empty items, not an error. Board tools call `FusionBridge.ensure_board()`
+  (via `read_board`, `read_selection`, `screenshot.capture`), which probes
+  `electronics.Board` and fires `EDIT .brd;` only when it reads empty — never
+  a no-op `EDIT`, which arms Fusion's invisible dialog latch (same pattern as
+  Hendley/ThomsonLint). Otherwise switch programmatically with `Document.activate()`
   via `execute`, and switch before firing editor-specific EAGLE commands. See
   "Switching document tabs" in `docs/fusion-bridge.md`.
 - **Board MOVEs need Ignore Violators (Insider builds).** Live DRC refuses
